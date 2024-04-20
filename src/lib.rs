@@ -5,6 +5,8 @@ use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+const SEGMENT_SIZE: usize = 256 * 1024;
+
 #[derive(Serialize, Deserialize)]
 struct TorrentFile {
     segments: Vec<Segment>,
@@ -13,15 +15,44 @@ struct TorrentFile {
 }
 
 impl TorrentFile {
+    fn new(data: Vec<u8>, name: &str) -> Self {
+        let mut index = 0;
+        let mut read = 0;
+        let mut segments = Vec::with_capacity(data.len() / SEGMENT_SIZE + 1);
+        while read < data.len() && (index + 1) * SEGMENT_SIZE < data.len() {
+            let segment = Segment { index, data: data[index * SEGMENT_SIZE..(index + 1) * SEGMENT_SIZE].to_vec() }; // double clone
+            segments.push(segment);
+
+            read += SEGMENT_SIZE;
+            index += 1;
+        }
+
+        if read > data.len() {
+            read -= SEGMENT_SIZE;
+            let segment = Segment { index, data: data[index * SEGMENT_SIZE..data.len()].to_vec() };
+        }
+
+        TorrentFile {
+            segments,
+            name: name.to_string(),
+            size: data.len(),
+        }
+    }
+
     fn add_segment(&mut self, to_add: Segment) {
         if self
             .segments
             .iter()
-            .find(|segment| segment.number == to_add.number)
+            .find(|segment| segment.index == to_add.index)
             .is_none()
         {
             self.segments.push(to_add);
         }
+    }
+
+    fn collect_file(&mut self) -> Vec<u8> {
+        self.segments.sort_by(|a, b| a.index.cmp(&b.index));
+        self.segments.iter().map(|segment| segment.data.clone()).collect::<Vec<_>>().concat()
     }
 }
 
@@ -40,8 +71,8 @@ impl NamedRequest {
 #[derive(Serialize, Deserialize)]
 enum Request {
     FetchNumbers,
-    FetchSegment { seg_number: u32 },
-    ReceiveNumbers { numbers: Option<Vec<u32>> },
+    FetchSegment { seg_number: usize },
+    ReceiveNumbers { numbers: Option<Vec<usize>> },
     ReceiveSegment { segment: Segment },
 }
 
@@ -52,7 +83,7 @@ struct Peer {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Segment {
-    number: u32,
+    index: usize,
     data: Vec<u8>,
 }
 
@@ -61,11 +92,44 @@ impl Peer {
         self.files.iter().find(|file| file.name == name)
     }
 
-    pub async fn new(folder: &Path, tracker: SocketAddr) -> Self {
-        Peer {
-            files: vec![],
+    pub fn new(folder: &Path, tracker: SocketAddr) -> Self {
+        let file_paths = std::fs::read_dir(folder)
+            .unwrap()
+            .map(|dir| dir.unwrap().path())
+            .filter(|dir| dir.is_file())
+            .collect::<Vec<_>>();
+
+        let files = file_paths.into_iter().map(|path| {
+            let data = std::fs::read(&path).unwrap();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            TorrentFile::new(data, name)
+        }).collect();
+
+        let mut peer = Peer {
+            files,
             tracker,
-        } // read files from folder
+        };
+
+        tokio::spawn(async move {
+            peer.listen()
+        });
+
+        peer
+    }
+
+    async fn download_file_peer(&mut self, name: &str, socket: SocketAddr) -> io::Result<()> {
+        let mut stream = TcpStream::connect(socket).await?;
+        let (mut reader, mut writer) = stream.split();
+
+        let fetch_numbers = bincode::serialize(&NamedRequest {
+            name: name.to_string(),
+            request: Request::FetchNumbers,
+        })
+            .unwrap(); // unwrap?
+
+        writer.write_all(&fetch_numbers).await?;
+
+        Ok(())
     }
 
     pub async fn download_file(&mut self, name: &str) -> io::Result<()> {
@@ -98,7 +162,7 @@ impl Peer {
             match request.request {
                 Request::FetchNumbers => {
                     let numbers = self.find_file(&request.name).and_then(|file| {
-                        Some(file.segments.iter().map(|segment| segment.number).collect())
+                        Some(file.segments.iter().map(|segment| segment.index).collect())
                     });
 
                     let request =
@@ -110,7 +174,7 @@ impl Peer {
                     let segment = self.find_file(&request.name).and_then(|file| {
                         file.segments
                             .iter()
-                            .find(|segment| segment.number == seg_number)
+                            .find(|segment| segment.index == seg_number)
                     });
 
                     let request = NamedRequest::new(
@@ -133,7 +197,7 @@ impl Peer {
                                         .iter()
                                         .zip(numbers.iter())
                                         .filter(|(segment, seg_number)| {
-                                            segment.number == **seg_number
+                                            segment.index == **seg_number
                                         })
                                         .map(|(segment, _)| segment)
                                         .collect::<Vec<_>>(),
@@ -170,5 +234,22 @@ impl Peer {
 
     async fn fetch_peers(tracker: SocketAddr) -> io::Result<Vec<SocketAddr>> {
         unimplemented!()
+    }
+}
+
+mod tests {
+    use std::net::SocketAddr;
+    use std::path::Path;
+    use crate::Peer;
+
+    #[tokio::test]
+    async fn download_from_one_peer_test() {
+        let mut peer1 = Peer::new(Path::new("."), SocketAddr::new("127.0.0.1".parse().unwrap(), 8000));
+        let peer2 = Peer::new(Path::new("src"),  SocketAddr::new("127.0.0.1".parse().unwrap(), 8001));
+
+        peer1.download_file_peer("file.pdf", SocketAddr::new("127.0.0.1".parse().unwrap(), 8001)).await.unwrap();
+
+        let main = std::fs::read("src/main.rs").unwrap();
+        assert_eq!(main, peer1.files[0].collect_file())
     }
 }
