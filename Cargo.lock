@@ -299,16 +299,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "torrent-client"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "serde",
- "tokio",
-]
-
-[[package]]
-name = "torrent-listener"
+name = "torrent-prototype"
 version = "0.1.0"
 dependencies = [
  "bincode",
