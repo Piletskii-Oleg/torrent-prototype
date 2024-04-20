@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::Path;
+use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -30,6 +31,12 @@ struct NamedRequest {
     request: Request,
 }
 
+impl NamedRequest {
+    fn new(name: String, request: Request) -> Self {
+        Self { name, request }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 enum Request {
     FetchNumbers,
@@ -50,6 +57,10 @@ struct Segment {
 }
 
 impl Peer {
+    fn find_file(&self, name: &str) -> Option<&TorrentFile> {
+        self.files.iter().find(|file| file.name == name)
+    }
+
     pub async fn new(folder: &Path, tracker: SocketAddr) -> Self {
         Peer {
             files: vec![],
@@ -57,24 +68,24 @@ impl Peer {
         } // read files from folder
     }
 
-    pub async fn download_file(&mut self, name: &str) -> tokio::io::Result<()> {
+    pub async fn download_file(&mut self, name: &str) -> io::Result<()> {
         let peer_sockets = Self::fetch_peers(self.tracker).await?;
         for socket in peer_sockets {
             let mut stream = TcpStream::connect(socket).await?;
             let (mut reader, mut writer) = stream.split();
 
-            let request = bincode::serialize(&NamedRequest {
+            let fetch_numbers = bincode::serialize(&NamedRequest {
                 name: name.to_string(),
                 request: Request::FetchNumbers,
             })
             .unwrap(); // unwrap?
 
-            writer.write_all(&request).await?;
+            writer.write_all(&fetch_numbers).await?;
         }
         Ok(())
     }
 
-    async fn listen(&mut self) -> tokio::io::Result<()> {
+    async fn listen(&mut self) -> io::Result<()> {
         let listener = TcpListener::bind("127.0.0.1:8000").await?;
 
         loop {
@@ -86,49 +97,36 @@ impl Peer {
 
             match request.request {
                 Request::FetchNumbers => {
-                    let numbers = self
-                        .files
-                        .iter()
-                        .find(|file| file.name == request.name)
-                        .and_then(|file| {
-                            Some(file.segments.iter().map(|segment| segment.number).collect())
-                        });
+                    let numbers = self.find_file(&request.name).and_then(|file| {
+                        Some(file.segments.iter().map(|segment| segment.number).collect())
+                    });
 
-                    let to_send = bincode::serialize(&NamedRequest {
-                        name: request.name,
-                        request: Request::ReceiveNumbers { numbers },
-                    })
-                    .unwrap();
-                    stream.write_all(&to_send).await?;
+                    let request =
+                        NamedRequest::new(request.name, Request::ReceiveNumbers { numbers });
+
+                    Self::send_request(request, &mut stream).await?;
                 }
                 Request::FetchSegment { seg_number } => {
-                    let segment = self
-                        .files
-                        .iter()
-                        .find(|file| file.name == request.name)
-                        .and_then(|file| {
-                            file.segments
-                                .iter()
-                                .find(|segment| segment.number == seg_number)
-                        })
-                        .unwrap()
-                        .clone();
-                    let to_send = bincode::serialize(&NamedRequest {
-                        name: request.name,
-                        request: Request::ReceiveSegment {
-                            segment: segment.to_owned(),
+                    let segment = self.find_file(&request.name).and_then(|file| {
+                        file.segments
+                            .iter()
+                            .find(|segment| segment.number == seg_number)
+                    });
+
+                    let request = NamedRequest::new(
+                        request.name,
+                        Request::ReceiveSegment {
+                            segment: segment.unwrap().clone(),
                         },
-                    })
-                    .unwrap();
-                    stream.write_all(&to_send).await?;
+                    );
+
+                    Self::send_request(request, &mut stream).await?;
                 }
                 Request::ReceiveNumbers { numbers } => match numbers {
                     None => {}
                     Some(numbers) => {
                         let segments = self
-                            .files
-                            .iter()
-                            .find(|file| file.name == request.name)
+                            .find_file(&request.name)
                             .and_then(|file| {
                                 Some(
                                     file.segments
@@ -144,14 +142,14 @@ impl Peer {
                             .unwrap();
 
                         for segment in segments.into_iter() {
-                            let to_send = bincode::serialize(&NamedRequest {
-                                name: request.name.clone(),
-                                request: Request::ReceiveSegment {
+                            let request = NamedRequest::new(
+                                request.name.clone(),
+                                Request::ReceiveSegment {
                                     segment: segment.clone(),
                                 },
-                            })
-                            .unwrap();
-                            stream.write_all(&to_send).await?;
+                            );
+
+                            Self::send_request(request, &mut stream).await?;
                         }
                     }
                 },
@@ -165,11 +163,12 @@ impl Peer {
         }
     }
 
-    pub async fn send_segment(name: &str, seg_number: usize) -> tokio::io::Result<()> {
-        unimplemented!()
+    async fn send_request(request: NamedRequest, stream: &mut TcpStream) -> io::Result<()> {
+        let to_send = bincode::serialize(&request).unwrap();
+        stream.write_all(&to_send).await
     }
 
-    async fn fetch_peers(tracker: SocketAddr) -> tokio::io::Result<Vec<SocketAddr>> {
+    async fn fetch_peers(tracker: SocketAddr) -> io::Result<Vec<SocketAddr>> {
         unimplemented!()
     }
 }
