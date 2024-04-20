@@ -13,12 +13,18 @@ struct TorrentFile {
 
 impl TorrentFile {
     fn add_segment(&mut self, to_add: Segment) {
-        if self.segments.iter().find(|segment| segment.number == to_add.number).is_none() {
+        if self
+            .segments
+            .iter()
+            .find(|segment| segment.number == to_add.number)
+            .is_none()
+        {
             self.segments.push(to_add);
         }
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct NamedRequest {
     name: String,
     request: Request,
@@ -26,21 +32,10 @@ struct NamedRequest {
 
 #[derive(Serialize, Deserialize)]
 enum Request {
-    FetchNumbers {
-        name: String,
-    },
-    FetchSegment {
-        name: String,
-        seg_number: u32,
-    },
-    ReceiveNumbers {
-        name: String,
-        numbers: Option<Vec<u32>>,
-    },
-    ReceiveSegment {
-        name: String,
-        segment: Segment,
-    },
+    FetchNumbers,
+    FetchSegment { seg_number: u32 },
+    ReceiveNumbers { numbers: Option<Vec<u32>> },
+    ReceiveSegment { segment: Segment },
 }
 
 struct Peer {
@@ -68,8 +63,9 @@ impl Peer {
             let mut stream = TcpStream::connect(socket).await?;
             let (mut reader, mut writer) = stream.split();
 
-            let request = bincode::serialize(&Request::FetchNumbers {
+            let request = bincode::serialize(&NamedRequest {
                 name: name.to_string(),
+                request: Request::FetchNumbers,
             })
             .unwrap(); // unwrap?
 
@@ -86,27 +82,30 @@ impl Peer {
             let mut buffer = vec![];
 
             stream.read_to_end(&mut buffer).await?;
-            let request: Request = bincode::deserialize(&buffer).unwrap(); // unwrap! very scary
+            let request: NamedRequest = bincode::deserialize(&buffer).unwrap(); // unwrap! very scary
 
-            match request {
-                Request::FetchNumbers { name } => {
-                    let numbers =
-                        self.files
-                            .iter()
-                            .find(|file| file.name == name)
-                            .and_then(|file| {
-                                Some(file.segments.iter().map(|segment| segment.number).collect())
-                            });
+            match request.request {
+                Request::FetchNumbers => {
+                    let numbers = self
+                        .files
+                        .iter()
+                        .find(|file| file.name == request.name)
+                        .and_then(|file| {
+                            Some(file.segments.iter().map(|segment| segment.number).collect())
+                        });
 
-                    let to_send =
-                        bincode::serialize(&Request::ReceiveNumbers { name, numbers }).unwrap();
+                    let to_send = bincode::serialize(&NamedRequest {
+                        name: request.name,
+                        request: Request::ReceiveNumbers { numbers },
+                    })
+                    .unwrap();
                     stream.write_all(&to_send).await?;
                 }
-                Request::FetchSegment { name, seg_number } => {
+                Request::FetchSegment { seg_number } => {
                     let segment = self
                         .files
                         .iter()
-                        .find(|file| file.name == name)
+                        .find(|file| file.name == request.name)
                         .and_then(|file| {
                             file.segments
                                 .iter()
@@ -114,36 +113,52 @@ impl Peer {
                         })
                         .unwrap()
                         .clone();
-                    let to_send = bincode::serialize(&Request::ReceiveSegment {
-                        name, segment: segment.to_owned(),
+                    let to_send = bincode::serialize(&NamedRequest {
+                        name: request.name,
+                        request: Request::ReceiveSegment {
+                            segment: segment.to_owned(),
+                        },
                     })
                     .unwrap();
                     stream.write_all(&to_send).await?;
                 }
-                Request::ReceiveNumbers { name, numbers } => match numbers {
+                Request::ReceiveNumbers { numbers } => match numbers {
                     None => {}
                     Some(numbers) => {
                         let segments = self
                             .files
                             .iter()
-                            .find(|file| &file.name == &name)
+                            .find(|file| file.name == request.name)
                             .and_then(|file| {
-                                Some(file.segments
-                                    .iter()
-                                    .zip(numbers.iter())
-                                    .filter(|(segment, seg_number)| segment.number == **seg_number)
-                                    .map(|(segment, _)| segment)
-                                    .collect::<Vec<_>>())
-                            }).unwrap();
+                                Some(
+                                    file.segments
+                                        .iter()
+                                        .zip(numbers.iter())
+                                        .filter(|(segment, seg_number)| {
+                                            segment.number == **seg_number
+                                        })
+                                        .map(|(segment, _)| segment)
+                                        .collect::<Vec<_>>(),
+                                )
+                            })
+                            .unwrap();
 
                         for segment in segments.into_iter() {
-                            let to_send = bincode::serialize(&Request::ReceiveSegment { name: name.clone(), segment: segment.clone() }).unwrap();
+                            let to_send = bincode::serialize(&NamedRequest {
+                                name: request.name.clone(),
+                                request: Request::ReceiveSegment {
+                                    segment: segment.clone(),
+                                },
+                            })
+                            .unwrap();
                             stream.write_all(&to_send).await?;
                         }
                     }
                 },
-                Request::ReceiveSegment { segment, name } => {
-                    self.files.iter_mut().find(|file| file.name == name)
+                Request::ReceiveSegment { segment } => {
+                    self.files
+                        .iter_mut()
+                        .find(|file| file.name == request.name)
                         .and_then(|file| Some(file.add_segment(segment)));
                 }
             }
