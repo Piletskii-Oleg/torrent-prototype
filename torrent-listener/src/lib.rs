@@ -30,6 +30,7 @@ impl TorrentFile {
         if read > data.len() {
             read -= SEGMENT_SIZE;
             let segment = Segment { index, data: data[index * SEGMENT_SIZE..data.len()].to_vec() };
+            segments.push(segment);
         }
 
         TorrentFile {
@@ -244,12 +245,12 @@ mod tests {
 
     #[tokio::test]
     async fn download_from_one_peer_test() {
-        let mut peer1 = Peer::new(Path::new("."), SocketAddr::new("127.0.0.1".parse().unwrap(), 8000));
-        let peer2 = Peer::new(Path::new("src"),  SocketAddr::new("127.0.0.1".parse().unwrap(), 8001));
+        let mut peer1 = Peer::new(Path::new("../.."), SocketAddr::new("127.0.0.1".parse().unwrap(), 8000));
+        let peer2 = Peer::new(Path::new("../../src"), SocketAddr::new("127.0.0.1".parse().unwrap(), 8001));
 
         peer1.download_file_peer("file.pdf", SocketAddr::new("127.0.0.1".parse().unwrap(), 8001)).await.unwrap();
 
-        let main = std::fs::read("src/main.rs").unwrap();
+        let main = std::fs::read("main.rs").unwrap();
         assert_eq!(main, peer1.files[0].collect_file())
     }
 }
