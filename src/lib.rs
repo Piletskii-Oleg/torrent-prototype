@@ -1,17 +1,53 @@
 mod client;
 mod listener;
 
-use std::cmp::min;
+use crate::client::PeerClient;
+use crate::listener::PeerListener;
 use serde::{Deserialize, Serialize};
+use std::cmp::min;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const SEGMENT_SIZE: usize = 256 * 1024;
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Segment {
+    index: usize,
+    data: Vec<u8>,
+}
 
 #[derive(Serialize, Deserialize)]
 struct TorrentFile {
     segments: Vec<Segment>,
     name: String,
     size: usize,
+}
+
+struct TorrentClient {
+    client: PeerClient,
+    listener: PeerListener,
+}
+
+#[derive(Serialize, Deserialize)]
+struct NamedRequest {
+    name: String,
+    request: Request,
+}
+
+#[derive(Serialize, Deserialize)]
+enum Request {
+    FetchFileInfo,
+    FetchNumbers,
+    FetchSegment { seg_number: usize },
+    ReceiveNumbers { numbers: Option<Vec<usize>> },
+    ReceiveSegment { segment: Segment },
+    ReceiveFileInfo { size: usize },
+    Finished,
+}
+
+impl NamedRequest {
+    fn new(name: String, request: Request) -> Self {
+        Self { name, request }
+    }
 }
 
 impl TorrentFile {
@@ -21,7 +57,10 @@ impl TorrentFile {
         let mut segments = Vec::with_capacity(data.len() / SEGMENT_SIZE + 1);
         while read < data.len() {
             let size = min(data.len() - read, SEGMENT_SIZE);
-            let segment = Segment { index, data: data[read..index * SEGMENT_SIZE + size].to_vec() }; // double clone
+            let segment = Segment {
+                index,
+                data: data[read..read + size].to_vec(),
+            }; // double clone
             segments.push(segment);
 
             read += size;
@@ -47,53 +86,78 @@ impl TorrentFile {
     }
 
     fn collect_file(&mut self) -> Vec<u8> {
-        self.segments.sort_by(|a, b| a.index.cmp(&b.index));
-        self.segments.iter().map(|segment| segment.data.clone()).collect::<Vec<_>>().concat()
+        let mut segments = self.segments.clone();
+        segments.sort_by(|a, b| a.index.cmp(&b.index));
+        segments
+            .into_iter()
+            .map(|segment| segment.data)
+            .collect::<Vec<_>>()
+            .concat()
     }
-}
 
-#[derive(Serialize, Deserialize)]
-struct NamedRequest {
-    name: String,
-    request: Request,
-}
+    fn is_complete(&self) -> bool {
+        if self.size / SEGMENT_SIZE != self.segments.len() {
+            return false;
+        }
 
-impl NamedRequest {
-    fn new(name: String, request: Request) -> Self {
-        Self { name, request }
+        let mut numbers = self
+            .segments
+            .iter()
+            .map(|segment| segment.index)
+            .collect::<Vec<_>>();
+        numbers.sort();
+
+        let mut current = 0;
+        for number in numbers {
+            if number != current {
+                return false;
+            }
+            current += 1;
+        }
+
+        true
     }
-}
-
-#[derive(Serialize, Deserialize)]
-enum Request {
-    FetchNumbers,
-    FetchSegment { seg_number: usize },
-    ReceiveNumbers { numbers: Option<Vec<usize>> },
-    ReceiveSegment { segment: Segment },
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct Segment {
-    index: usize,
-    data: Vec<u8>,
 }
 
 mod tests {
-    use std::net::SocketAddr;
-    use std::path::Path;
     use crate::client::PeerClient;
     use crate::listener::PeerListener;
+    use std::net::SocketAddr;
+    use std::path::Path;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     async fn download_from_one_peer_test() {
-        PeerListener::new_listen(Path::new(".").into(), SocketAddr::new("127.0.0.1".parse().unwrap(), 8000));
-        PeerListener::new_listen(Path::new(".").into(), SocketAddr::new("127.0.0.1".parse().unwrap(), 8001));
+        PeerListener::new_listen(
+            Path::new(".").into(),
+            SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
+        );
+        PeerListener::new_listen(
+            Path::new("src").into(),
+            SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
+        );
 
-        let mut peer1 = PeerClient::new(Path::new("../").into(), SocketAddr::new("127.0.0.1".parse().unwrap(), 8000));
-        peer1.download_file_peer("file.pdf", SocketAddr::new("127.0.0.1".parse().unwrap(), 8001)).await.unwrap();
+        let mut peer1 = PeerClient::new(
+            Path::new(".").into(),
+            SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
+        );
+        peer1.download_file_peer(
+            "file.pdf".to_string(),
+            SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
+        )
+        .await
+        .unwrap();
 
         let main = std::fs::read("src/file.pdf").unwrap();
-        assert_eq!(main.len(), peer1.files.iter_mut().find(|file| file.name == "file.pdf").unwrap().collect_file().len());
+        assert_eq!(
+            main.len(),
+            peer1
+                .files
+                .iter_mut()
+                .find(|file| file.name == "file.pdf")
+                .unwrap()
+                .collect_file()
+                .len()
+        );
         assert_eq!(main, peer1.files[0].collect_file())
     }
 }
