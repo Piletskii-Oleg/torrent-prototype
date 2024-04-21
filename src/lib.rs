@@ -120,7 +120,13 @@ impl TorrentFile {
     }
 
     fn is_complete(&self) -> bool {
-        if self.size != self.segments.iter().map(|seg| seg.data.len()).sum::<usize>() {
+        if self.size
+            != self
+                .segments
+                .iter()
+                .map(|seg| seg.data.len())
+                .sum::<usize>()
+        {
             return false;
         }
 
@@ -167,7 +173,10 @@ mod tests {
         )
         .await;
         peer1
-            .download_file_peer("file.pdf".to_string(), SocketAddr::new("127.0.0.1".parse().unwrap(), 8001))
+            .download_file_peer(
+                "file.pdf".to_string(),
+                SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
+            )
             .await
             .unwrap();
 

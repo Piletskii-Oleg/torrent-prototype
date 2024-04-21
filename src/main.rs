@@ -1,27 +1,27 @@
 use std::net::SocketAddr;
 use std::path::Path;
-use torrent_prototype::{PeerClient, PeerListener};
+use torrent_prototype::PeerClient;
 
 #[tokio::main]
 async fn main() {
-    PeerListener::new_listen(
-        Path::new("src").into(),
-        SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
-    );
-
     let mut peer0 = PeerClient::new(
         Path::new("src").into(),
         SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
+        SocketAddr::new("127.0.0.1".parse().unwrap(), 8001)
     )
-        .await;
+    .await;
     let mut peer1 = PeerClient::new(
         Path::new(".").into(),
         SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
+        SocketAddr::new("127.0.0.1".parse().unwrap(), 9000)
     )
-        .await;
+    .await;
 
     peer1
-        .download_file("file.pdf".to_string())
+        .download_file_peer(
+            "file.pdf".to_string(),
+            SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
+        )
         .await
         .unwrap();
 

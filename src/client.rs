@@ -1,7 +1,8 @@
-use crate::{NamedRequest, OldRequest, TorrentFile};
+use crate::{NamedRequest, OldRequest, PeerListener, TorrentFile};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,12 +16,12 @@ const FETCH_FILE_STRING: &str = "EXIST_FILE";
 const FETCH_FILE_PEERS_STRING: &str = "GET_PEERS";
 
 pub struct PeerClient {
-    pub files: Vec<TorrentFile>,
+    pub files: Arc<Mutex<Vec<TorrentFile>>>,
     tracker: SocketAddr,
 }
 
 impl PeerClient {
-    pub async fn new(folder: PathBuf, tracker: SocketAddr) -> Self {
+    pub async fn new(folder: PathBuf, tracker: SocketAddr, listen_address: SocketAddr) -> Self {
         let file_paths = std::fs::read_dir(folder)
             .unwrap()
             .map(|dir| dir.unwrap().path())
@@ -36,7 +37,13 @@ impl PeerClient {
             })
             .collect();
 
-        let peer = PeerClient { files, tracker };
+        let files = Arc::new(Mutex::new(files));
+        let peer = PeerClient {
+            files,
+            tracker,
+        };
+
+        PeerListener::new_listen(peer.files.clone(), listen_address);
 
         //peer.notify_tracker().await.unwrap();
 
@@ -49,8 +56,7 @@ impl PeerClient {
         socket: SocketAddr,
     ) -> Result<(), Box<dyn Error>> {
         println!("Connecting to channel with {socket}");
-        let mut channel: BincodeChannel<NamedRequest> =
-            channel_to(socket).await?;
+        let mut channel: BincodeChannel<NamedRequest> = channel_to(socket).await?;
 
         let fetch_file = NamedRequest {
             name: name.to_string(),
@@ -59,7 +65,7 @@ impl PeerClient {
 
         channel.send(fetch_file).await?;
 
-        self.process_stream(channel).await?;
+        self.process_channel(channel).await?;
 
         Ok(())
     }
@@ -73,12 +79,11 @@ impl PeerClient {
         Ok(())
     }
 
-    fn find_file(&self, name: &str) -> Option<&TorrentFile> {
-        self.files.iter().find(|file| file.name == name)
-    }
-
     fn create_file(&mut self, name: &str) {
-        self.files.push(TorrentFile::new(vec![], name));
+        self.files
+            .lock()
+            .unwrap()
+            .push(TorrentFile::new(vec![], name));
     }
 
     async fn fetch_peers(&self, file_name: &str) -> Result<Vec<SocketAddr>, Box<dyn Error>> {
@@ -105,6 +110,8 @@ impl PeerClient {
     async fn notify_tracker(&self) -> io::Result<()> {
         let requests = self
             .files
+            .lock()
+            .unwrap()
             .iter()
             .map(|file| file.name.clone())
             .map(|name| format!("{NOTIFY_STRING}\n{name}"))
@@ -119,7 +126,7 @@ impl PeerClient {
         Ok(())
     }
 
-    async fn process_stream(
+    async fn process_channel(
         &mut self,
         mut channel: BincodeChannel<NamedRequest>,
     ) -> Result<(), Box<dyn Error>> {
@@ -151,6 +158,8 @@ impl PeerClient {
                     );
                     let index = segment.index;
                     self.files
+                        .lock()
+                        .unwrap()
                         .iter_mut()
                         .find(|file| file.name == request.name)
                         .and_then(|file| Some(file.add_segment(segment)));
@@ -161,7 +170,8 @@ impl PeerClient {
                         channel.peer_addr(),
                         request.name
                     );
-                    let file = self.find_file(&request.name).unwrap();
+                    let guard = self.files.lock().unwrap();
+                    let file = guard.iter().find(|file| file.name == request.name).unwrap();
                     if file.is_complete() {
                         channel
                             .send(NamedRequest::new(request.name, OldRequest::Finished))
@@ -170,12 +180,15 @@ impl PeerClient {
                 }
                 OldRequest::Finished => {
                     println!("Client: {}: download complete.", request.name);
-                    let file = std::fs::write(&request.name, self.files
+                    let data = self
+                        .files
+                        .lock()
+                        .unwrap()
                         .iter_mut()
                         .find(|file| file.name == request.name)
                         .unwrap()
-                        .collect_file())
-                        .unwrap();
+                        .collect_file();
+                    std::fs::write(&request.name, data)?;
                     channel
                         .send(NamedRequest::new(request.name, OldRequest::Finished))
                         .await?;
@@ -187,14 +200,14 @@ impl PeerClient {
                     let request = NamedRequest::new(request.name, OldRequest::FetchNumbers);
                     channel.send(request).await?;
                 }
-                _ => unreachable!()
+                _ => unreachable!(),
             }
         }
         Ok(())
     }
 
     fn create_empty_file(&mut self, name: &str, size: usize) {
-        self.files.push(TorrentFile {
+        self.files.lock().unwrap().push(TorrentFile {
             segments: vec![],
             name: name.to_string(),
             size,
