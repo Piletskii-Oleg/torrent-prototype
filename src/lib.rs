@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const SEGMENT_SIZE: usize = 256 * 1024;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct Segment {
     index: usize,
     data: Vec<u8>,
@@ -27,13 +27,13 @@ struct TorrentClient {
     listener: PeerListener,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct NamedRequest {
     name: String,
     request: Request,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 enum Request {
     FetchFileInfo,
     FetchNumbers,
@@ -149,8 +149,6 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(Duration::from_secs(10)).await;
-
         let main = std::fs::read("src/file.pdf").unwrap();
         assert_eq!(
             main.len(),
@@ -162,6 +160,6 @@ mod tests {
                 .collect_file()
                 .len()
         );
-        assert_eq!(main, peer1.files[0].collect_file())
+        assert_eq!(main, peer1.files[5].collect_file())
     }
 }

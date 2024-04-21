@@ -1,3 +1,4 @@
+use std::error::Error;
 use crate::{NamedRequest, Request, TorrentFile};
 use std::fmt::Debug;
 use std::net::SocketAddr;
@@ -5,6 +6,7 @@ use std::path::PathBuf;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tsyncp::channel::{BincodeChannel, channel_on, channel_to};
 
 pub(super) struct PeerListener {
     files: Vec<TorrentFile>,
@@ -40,15 +42,6 @@ impl PeerListener {
         tokio::spawn(async move { peer.listen(listen_address).await });
     }
 
-    pub(super) async fn from_stream(files: &[TorrentFile], stream: TcpStream) {
-        let mut peer = PeerListener {
-            files: files.to_vec(),
-            listen_address: stream.local_addr().unwrap(),
-        };
-
-        peer.process_stream(stream).await.unwrap();
-    }
-
     fn create_empty_file(&mut self, name: &str, size: usize) {
         self.files.push(TorrentFile {
             segments: vec![],
@@ -58,26 +51,24 @@ impl PeerListener {
     }
 
     async fn listen(mut self, addr: SocketAddr) -> io::Result<()> {
-        let listener = TcpListener::bind(addr).await?;
+        //let listener = TcpListener::bind(addr).await?;
 
-        loop {
-            let (stream, _) = listener.accept().await?;
-            println!("listener local: {}", stream.local_addr().unwrap());
-            println!("listener remote: {}", stream.peer_addr().unwrap());
-            self.process_stream(stream).await?;
-        }
+        let channel = channel_on(addr).await.unwrap();
+        self.process_stream(channel).await
+
+        // loop {
+        //     let socket = {
+        //         let (str, socket) = listener.accept().await?;
+        //         socket
+        //     };
+        //     let channel = channel_on(socket).await.unwrap();
+        //     self.process_stream(channel).await?;
+        // }
     }
 
-    pub(super) async fn process_stream(&mut self, mut stream: TcpStream) -> io::Result<()> {
+    pub(super) async fn process_stream(&mut self, mut channel: BincodeChannel<NamedRequest>) -> io::Result<()> {
         loop {
-            let mut buffer = vec![];
-            stream.readable().await?;
-            stream.read_to_end(&mut buffer).await?;
-            if buffer.is_empty() {
-                continue;
-            }
-
-            let request: NamedRequest = bincode::deserialize(&buffer).unwrap(); // unwrap! very scary
+            let request = channel.recv().await.unwrap().unwrap();
 
             match request.request {
                 Request::FetchNumbers => {
@@ -88,7 +79,7 @@ impl PeerListener {
                     let request =
                         NamedRequest::new(request.name, Request::ReceiveNumbers { numbers });
 
-                    Self::send_request(request, &mut stream).await?;
+                    channel.send(request).await.unwrap();
                 }
                 Request::FetchSegment { seg_number } => {
                     let segment = self.find_file(&request.name).and_then(|file| {
@@ -104,7 +95,7 @@ impl PeerListener {
                         },
                     );
 
-                    Self::send_request(request, &mut stream).await?;
+                    channel.send(request).await.unwrap();
                 }
                 Request::ReceiveNumbers { numbers } => match numbers {
                     None => {}
@@ -134,7 +125,7 @@ impl PeerListener {
                                 },
                             );
 
-                            Self::send_request(request, &mut stream).await?;
+                            channel.send(request).await.unwrap();
                         }
                     }
                 },
@@ -148,14 +139,13 @@ impl PeerListener {
 
                     let file = self.find_file(&request.name).unwrap();
                     if file.is_complete() {
-                        Self::send_request(
-                            NamedRequest::new(request.name, Request::Finished),
-                            &mut stream,
-                        )
-                            .await?;
+                        channel.send(NamedRequest::new(request.name, Request::Finished)).await.unwrap();
                     }
                 }
-                Request::Finished => { break; }
+                Request::Finished => {
+                    channel.send(NamedRequest::new(request.name, Request::Finished)).await.unwrap();
+                    break;
+                }
                 Request::FetchFileInfo => match self.find_file(&request.name) {
                     None => {}
                     Some(file) => {
@@ -163,13 +153,13 @@ impl PeerListener {
                             request.name,
                             Request::ReceiveFileInfo { size: file.size },
                         );
-                        Self::send_request(request, &mut stream).await?;
+                        channel.send(request).await.unwrap();
                     }
                 },
                 Request::ReceiveFileInfo { size } => {
                     self.create_empty_file(&request.name, size);
                     let request = NamedRequest::new(request.name, Request::FetchNumbers);
-                    Self::send_request(request, &mut stream).await?;
+                    channel.send(request).await.unwrap();
                 }
             }
         }

@@ -6,10 +6,11 @@ use std::time::Duration;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tsyncp::channel::{BincodeChannel, channel_to};
 
 pub(crate) struct PeerClient {
     pub(super) files: Vec<TorrentFile>,
-    tracker: SocketAddr,
+    //tracker: SocketAddr,
 }
 
 impl PeerClient {
@@ -29,7 +30,7 @@ impl PeerClient {
             })
             .collect();
 
-        PeerClient { files, tracker }
+        PeerClient { files }
     }
 
     pub(super) async fn download_file_peer(
@@ -38,30 +39,25 @@ impl PeerClient {
         socket: SocketAddr,
     ) -> Result<(), Box<dyn Error>> {
         // let mut rx: BincodeReceiver<NamedRequest> = receiver_on(socket).await?;
+        {
+          //  let stream = TcpStream::connect(socket).await?;
+        }
+        let mut channel: BincodeChannel<NamedRequest> = channel_to(socket).retry(Duration::from_secs(1), 5).await?;
 
-        let mut stream = TcpStream::connect(socket).await?;
-
-        let (mut reader, mut writer) = stream.split();
-
-        let fetch_numbers = bincode::serialize(&NamedRequest {
+        let fetch_numbers = NamedRequest {
             name: name.to_string(),
             request: Request::FetchFileInfo,
-        })
-        .unwrap(); // unwrap?
+        };
 
-        writer.write_all(&fetch_numbers).await?;
-        writer.flush().await?;
+        channel.send(fetch_numbers).await?;
 
-        //writer.shutdown().await?;
-        reader.readable().await?;
-
-        self.process_stream(&mut stream).await?;
+        self.process_stream(&mut channel).await?;
 
         Ok(())
     }
 
     pub async fn download_file(&mut self, name: String) -> io::Result<()> {
-        let peer_sockets = Self::fetch_peers(self.tracker).await?;
+        let peer_sockets = Self::fetch_peers().await?; // self.tracker
         for socket in peer_sockets {
             let name = name.clone();
             self.download_file_peer(name, socket).await.unwrap();
@@ -77,19 +73,13 @@ impl PeerClient {
         self.files.push(TorrentFile::new(vec![], name));
     }
 
-    async fn fetch_peers(tracker: SocketAddr) -> io::Result<Vec<SocketAddr>> {
+    async fn fetch_peers() -> io::Result<Vec<SocketAddr>> { // tracker: SocketAddr
         unimplemented!()
     }
 
-    pub(super) async fn process_stream(&mut self, mut stream: &mut TcpStream) -> io::Result<()> {
+    pub(super) async fn process_stream(&mut self, mut channel: &mut BincodeChannel<NamedRequest>) -> Result<(), Box<dyn Error>> {
         loop {
-            let mut buffer = vec![];
-            stream.read_to_end(&mut buffer).await?;
-            if buffer.is_empty() {
-                continue;
-            }
-
-            let request: NamedRequest = bincode::deserialize(&buffer).unwrap(); // unwrap! very scary
+            let request = channel.recv().await.unwrap()?;
 
             match request.request {
                 Request::FetchNumbers => {
@@ -100,7 +90,7 @@ impl PeerClient {
                     let request =
                         NamedRequest::new(request.name, Request::ReceiveNumbers { numbers });
 
-                    Self::send_request(request, &mut stream).await?;
+                    channel.send(request).await?;
                 }
                 Request::FetchSegment { seg_number } => {
                     let segment = self.find_file(&request.name).and_then(|file| {
@@ -116,40 +106,17 @@ impl PeerClient {
                         },
                     );
 
-                    Self::send_request(request, &mut stream).await?;
+                    channel.send(request).await?;
                 }
                 Request::ReceiveNumbers { numbers } => match numbers {
                     None => {}
                     Some(numbers) => {
-                        let segments = self
-                            .find_file(&request.name)
-                            .and_then(|file| {
-                                Some(
-                                    file.segments
-                                        .iter()
-                                        .zip(numbers.iter())
-                                        .filter(|(segment, seg_number)| {
-                                            segment.index == **seg_number
-                                        })
-                                        .map(|(segment, _)| segment)
-                                        .collect::<Vec<_>>(),
-                                )
-                            })
-                            .unwrap();
-
-                        for segment in segments.into_iter() {
-                            println!("recv seg {}", segment.index);
-                            let request = NamedRequest::new(
-                                request.name.clone(),
-                                Request::ReceiveSegment {
-                                    segment: segment.clone(),
-                                },
-                            );
-
-                            Self::send_request(request, &mut stream).await?;
+                        for seg_number in numbers {
+                            let request = NamedRequest::new(request.name.clone(), Request::FetchSegment { seg_number });
+                            channel.send(request).await?;
                         }
-                    }
-                },
+                    },
+                }
                 Request::ReceiveSegment { segment } => {
                     let a = self
                         .files
@@ -160,14 +127,11 @@ impl PeerClient {
 
                     let file = self.find_file(&request.name).unwrap();
                     if file.is_complete() {
-                        Self::send_request(
-                            NamedRequest::new(request.name, Request::Finished),
-                            &mut stream,
-                        )
-                        .await?;
+                        channel.send(NamedRequest::new(request.name, Request::Finished)).await?;
                     }
                 }
                 Request::Finished => {
+                    channel.send(NamedRequest::new(request.name, Request::Finished)).await?;
                     break;
                 }
                 Request::FetchFileInfo => match self.find_file(&request.name) {
@@ -177,16 +141,17 @@ impl PeerClient {
                             request.name,
                             Request::ReceiveFileInfo { size: file.size },
                         );
-                        Self::send_request(request, &mut stream).await?;
+                        channel.send(request).await?;
                     }
                 },
                 Request::ReceiveFileInfo { size } => {
                     self.create_empty_file(&request.name, size);
                     let request = NamedRequest::new(request.name, Request::FetchNumbers);
-                    Self::send_request(request, &mut stream).await?;
+                    channel.send(request).await?;
                 }
             }
         }
+        println!("downloaded");
         Ok(())
     }
 
