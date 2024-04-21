@@ -15,7 +15,7 @@ struct Segment {
     data: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct TorrentFile {
     segments: Vec<Segment>,
     name: String,
@@ -124,6 +124,7 @@ mod tests {
     use crate::listener::PeerListener;
     use std::net::SocketAddr;
     use std::path::Path;
+    use std::time::Duration;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     async fn download_from_one_peer_test() {
@@ -140,12 +141,15 @@ mod tests {
             Path::new(".").into(),
             SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
         );
-        peer1.download_file_peer(
-            "file.pdf".to_string(),
-            SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
-        )
-        .await
-        .unwrap();
+        peer1
+            .download_file_peer(
+                "file.pdf".to_string(),
+                SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
 
         let main = std::fs::read("src/file.pdf").unwrap();
         assert_eq!(

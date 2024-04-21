@@ -40,6 +40,15 @@ impl PeerListener {
         tokio::spawn(async move { peer.listen(listen_address).await });
     }
 
+    pub(super) async fn from_stream(files: &[TorrentFile], stream: TcpStream) {
+        let mut peer = PeerListener {
+            files: files.to_vec(),
+            listen_address: stream.local_addr().unwrap(),
+        };
+
+        peer.process_stream(stream).await.unwrap();
+    }
+
     fn create_empty_file(&mut self, name: &str, size: usize) {
         self.files.push(TorrentFile {
             segments: vec![],
@@ -52,16 +61,22 @@ impl PeerListener {
         let listener = TcpListener::bind(addr).await?;
 
         loop {
-            let (mut stream, socket) = listener.accept().await?;
-            println!("{socket}");
-            self.process_stream(&mut stream).await?;
+            let (stream, _) = listener.accept().await?;
+            println!("listener local: {}", stream.local_addr().unwrap());
+            println!("listener remote: {}", stream.peer_addr().unwrap());
+            self.process_stream(stream).await?;
         }
     }
 
-    async fn process_stream(&mut self, mut stream: &mut TcpStream) -> io::Result<()> {
+    pub(super) async fn process_stream(&mut self, mut stream: TcpStream) -> io::Result<()> {
         loop {
             let mut buffer = vec![];
+            stream.readable().await?;
             stream.read_to_end(&mut buffer).await?;
+            if buffer.is_empty() {
+                continue;
+            }
+
             let request: NamedRequest = bincode::deserialize(&buffer).unwrap(); // unwrap! very scary
 
             match request.request {
@@ -163,6 +178,9 @@ impl PeerListener {
 
     async fn send_request(request: NamedRequest, stream: &mut TcpStream) -> io::Result<()> {
         let to_send = bincode::serialize(&request).unwrap();
-        stream.write_all(&to_send).await
+        let (mut reader, mut writer) = stream.split();
+        writer.write_all(&to_send).await?;
+        writer.flush().await?;
+        writer.shutdown().await
     }
 }
