@@ -4,16 +4,23 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tsyncp::channel::{channel_to, BincodeChannel};
+
+const NOTIFY_STRING: &str = "SET_FILE";
+
+const FETCH_FILE_STRING: &str = "EXIST_FILE";
+
+const FETCH_FILE_PEERS_STRING: &str = "GET_PEERS";
 
 pub(crate) struct PeerClient {
     pub(super) files: Vec<TorrentFile>,
-    //tracker: SocketAddr,
+    tracker: SocketAddr,
 }
 
 impl PeerClient {
-    pub fn new(folder: PathBuf, tracker: SocketAddr) -> Self {
+    pub async fn new(folder: PathBuf, tracker: SocketAddr) -> Self {
         let file_paths = std::fs::read_dir(folder)
             .unwrap()
             .map(|dir| dir.unwrap().path())
@@ -29,7 +36,11 @@ impl PeerClient {
             })
             .collect();
 
-        PeerClient { files }
+        let peer = PeerClient { files, tracker };
+
+        //peer.notify_tracker().await.unwrap();
+
+        peer
     }
 
     pub(super) async fn download_file_peer(
@@ -52,8 +63,8 @@ impl PeerClient {
         Ok(())
     }
 
-    pub async fn download_file(&mut self, name: String) -> io::Result<()> {
-        let peer_sockets = Self::fetch_peers().await?; // self.tracker
+    pub async fn download_file(&mut self, name: String) -> Result<(), Box<dyn Error>> {
+        let peer_sockets = self.fetch_peers(&name).await?;
         for socket in peer_sockets {
             let name = name.clone();
             self.download_file_peer(name, socket).await.unwrap();
@@ -69,9 +80,34 @@ impl PeerClient {
         self.files.push(TorrentFile::new(vec![], name));
     }
 
-    async fn fetch_peers() -> io::Result<Vec<SocketAddr>> {
-        // tracker: SocketAddr
-        unimplemented!()
+    async fn fetch_peers(&self, file_name: &str) -> Result<Vec<SocketAddr>, Box<dyn Error>> {
+        let request = format!("{FETCH_FILE_PEERS_STRING}\n{file_name}");
+
+        let mut tracker = TcpStream::connect(self.tracker).await?;
+        tracker.write_all(request.as_bytes()).await?;
+        tracker.flush().await?;
+        tracker.shutdown().await?;
+
+        let mut received = String::new();
+        tracker.read_to_string(&mut received).await?;
+
+        Ok(received.lines().skip(1).map(|ip| ip.parse().unwrap()).collect())
+    }
+
+    async fn notify_tracker(&self) -> io::Result<()> {
+        let requests = self.files
+            .iter()
+            .map(|file| file.name.clone())
+            .map(|name| format!("{NOTIFY_STRING}\n{name}"))
+            .collect::<Vec<_>>();
+
+        let mut tracker = TcpStream::connect(self.tracker).await?;
+        for request in requests {
+            tracker.write_all(request.as_bytes()).await?;
+            tracker.flush().await?;
+        }
+
+        Ok(())
     }
 
     async fn process_stream(

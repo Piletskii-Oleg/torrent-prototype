@@ -1,5 +1,6 @@
 mod client;
 mod listener;
+mod tracker;
 
 use crate::client::PeerClient;
 use crate::listener::PeerListener;
@@ -157,7 +158,7 @@ mod tests {
         let mut peer1 = PeerClient::new(
             Path::new(".").into(),
             SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
-        );
+        ).await;
         peer1
             .download_file_peer(
                 "file.pdf".to_string(),
