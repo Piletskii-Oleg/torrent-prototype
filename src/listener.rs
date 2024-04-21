@@ -62,6 +62,7 @@ impl PeerListener {
 
             match request.request {
                 OldRequest::FetchNumbers => {
+                    println!("Listener: Received request for segment numbers from {}. Sending...", channel.peer_addr());
                     let numbers = self.find_file(&request.name).and_then(|file| {
                         Some(file.segments.iter().map(|segment| segment.index).collect())
                     });
@@ -72,6 +73,7 @@ impl PeerListener {
                     channel.send(request).await.unwrap();
                 }
                 OldRequest::FetchSegment { seg_number } => {
+                    println!("Listener: Received request for segment number {seg_number} from {}. Sending...", channel.peer_addr());
                     let segment = self.find_file(&request.name).and_then(|file| {
                         file.segments
                             .iter()
@@ -114,6 +116,7 @@ impl PeerListener {
                     }
                 }
                 OldRequest::Finished => {
+                    println!("{} transfer complete.", request.name);
                     channel
                         .send(NamedRequest::new(request.name, OldRequest::Finished))
                         .await
@@ -123,6 +126,7 @@ impl PeerListener {
                 OldRequest::FetchFileInfo => match self.find_file(&request.name) {
                     None => {}
                     Some(file) => {
+                        println!("Listener: Request from {}. File {} with size {} found. Sending file info...", channel.peer_addr(), request.name, file.size);
                         let request = NamedRequest::new(
                             request.name,
                             OldRequest::ReceiveFileInfo { size: file.size },

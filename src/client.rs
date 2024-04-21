@@ -111,6 +111,7 @@ impl PeerClient {
                 OldRequest::ReceiveNumbers { numbers } => match numbers {
                     None => {}
                     Some(numbers) => {
+                        println!("Client: Received numbers from peer on {}", channel.peer_addr());
                         for seg_number in numbers {
                             let request = NamedRequest::new(
                                 request.name.clone(),
@@ -121,11 +122,14 @@ impl PeerClient {
                     }
                 },
                 OldRequest::ReceiveSegment { segment } => {
+                    println!("Client: Received segment number {} from peer on {}", segment.index, channel.peer_addr());
+                    let index = segment.index;
                     self.files
                         .iter_mut()
                         .find(|file| file.name == request.name)
                         .and_then(|file| Some(file.add_segment(segment)));
 
+                    println!("Client: Added segment number {} from {} to the file {}.", index, channel.peer_addr(), request.name);
                     let file = self.find_file(&request.name).unwrap();
                     if file.is_complete() {
                         channel
@@ -134,6 +138,7 @@ impl PeerClient {
                     }
                 }
                 OldRequest::Finished => {
+                    println!("Client: {}: download complete.", request.name);
                     channel
                         .send(NamedRequest::new(request.name, OldRequest::Finished))
                         .await?;
@@ -150,6 +155,7 @@ impl PeerClient {
                     }
                 },
                 OldRequest::ReceiveFileInfo { size } => {
+                    println!("Client: Received {}'s size: {size}", request.name);
                     self.create_empty_file(&request.name, size);
                     let request = NamedRequest::new(request.name, OldRequest::FetchNumbers);
                     channel.send(request).await?;
