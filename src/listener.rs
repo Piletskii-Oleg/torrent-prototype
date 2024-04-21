@@ -6,7 +6,7 @@ use tokio::io;
 use tokio::io::AsyncReadExt;
 use tsyncp::channel::{channel_on, BincodeChannel};
 
-pub(super) struct PeerListener {
+pub struct PeerListener {
     files: Vec<TorrentFile>,
     listen_address: SocketAddr, // peers: Vec<SocketAddr> - should be session-wide only
 }
@@ -16,7 +16,7 @@ impl PeerListener {
         self.files.iter().find(|file| file.name == name)
     }
 
-    pub(super) fn new_listen(folder: PathBuf, listen_address: SocketAddr) {
+    pub fn new_listen(folder: PathBuf, listen_address: SocketAddr) {
         let file_paths = std::fs::read_dir(folder)
             .unwrap()
             .map(|dir| dir.unwrap().path())
@@ -62,7 +62,10 @@ impl PeerListener {
 
             match request.request {
                 OldRequest::FetchNumbers => {
-                    println!("Listener: Received request for segment numbers from {}. Sending...", channel.peer_addr());
+                    println!(
+                        "Listener: Received request for segment numbers from {}. Sending...",
+                        channel.peer_addr()
+                    );
                     let numbers = self.find_file(&request.name).and_then(|file| {
                         Some(file.segments.iter().map(|segment| segment.index).collect())
                     });
@@ -89,32 +92,6 @@ impl PeerListener {
 
                     channel.send(request).await.unwrap();
                 }
-                OldRequest::ReceiveNumbers { numbers } => match numbers {
-                    None => {}
-                    Some(numbers) => {
-                        for seg_number in numbers {
-                            let request = NamedRequest::new(
-                                request.name.clone(),
-                                OldRequest::FetchSegment { seg_number },
-                            );
-                            channel.send(request).await.unwrap();
-                        }
-                    }
-                },
-                OldRequest::ReceiveSegment { segment } => {
-                    self.files
-                        .iter_mut()
-                        .find(|file| file.name == request.name)
-                        .and_then(|file| Some(file.add_segment(segment)));
-
-                    let file = self.find_file(&request.name).unwrap();
-                    if file.is_complete() {
-                        channel
-                            .send(NamedRequest::new(request.name, OldRequest::Finished))
-                            .await
-                            .unwrap();
-                    }
-                }
                 OldRequest::Finished => {
                     println!("{} transfer complete.", request.name);
                     channel
@@ -134,11 +111,7 @@ impl PeerListener {
                         channel.send(request).await.unwrap();
                     }
                 },
-                OldRequest::ReceiveFileInfo { size } => {
-                    self.create_empty_file(&request.name, size);
-                    let request = NamedRequest::new(request.name, OldRequest::FetchNumbers);
-                    channel.send(request).await.unwrap();
-                }
+                _ => unreachable!()
             }
         }
         Ok(())

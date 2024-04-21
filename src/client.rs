@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpSocket, TcpStream};
 use tsyncp::channel::{channel_to, BincodeChannel};
 
 const NOTIFY_STRING: &str = "SET_FILE";
@@ -14,8 +14,8 @@ const FETCH_FILE_STRING: &str = "EXIST_FILE";
 
 const FETCH_FILE_PEERS_STRING: &str = "GET_PEERS";
 
-pub(crate) struct PeerClient {
-    pub(super) files: Vec<TorrentFile>,
+pub struct PeerClient {
+    pub files: Vec<TorrentFile>,
     tracker: SocketAddr,
 }
 
@@ -43,20 +43,21 @@ impl PeerClient {
         peer
     }
 
-    pub(super) async fn download_file_peer(
+    pub async fn download_file_peer(
         &mut self,
         name: String,
         socket: SocketAddr,
     ) -> Result<(), Box<dyn Error>> {
+        println!("Connecting to channel with {socket}");
         let mut channel: BincodeChannel<NamedRequest> =
-            channel_to(socket).retry(Duration::from_secs(1), 5).await?;
+            channel_to(socket).await?;
 
-        let fetch_numbers = NamedRequest {
+        let fetch_file = NamedRequest {
             name: name.to_string(),
             request: OldRequest::FetchFileInfo,
         };
 
-        channel.send(fetch_numbers).await?;
+        channel.send(fetch_file).await?;
 
         self.process_stream(channel).await?;
 
@@ -83,6 +84,7 @@ impl PeerClient {
     async fn fetch_peers(&self, file_name: &str) -> Result<Vec<SocketAddr>, Box<dyn Error>> {
         let request = format!("{FETCH_FILE_PEERS_STRING}\n{file_name}");
 
+        println!("Requesting peers:\n{request}");
         let mut tracker = TcpStream::connect(self.tracker).await?;
         tracker.write_all(request.as_bytes()).await?;
         tracker.flush().await?;
@@ -91,11 +93,18 @@ impl PeerClient {
         let mut received = String::new();
         tracker.read_to_string(&mut received).await?;
 
-        Ok(received.lines().skip(1).map(|ip| ip.parse().unwrap()).collect())
+        println!("Received peers:\n{received}");
+
+        Ok(received
+            .lines()
+            .skip(1)
+            .map(|ip| ip.parse().unwrap())
+            .collect())
     }
 
     async fn notify_tracker(&self) -> io::Result<()> {
-        let requests = self.files
+        let requests = self
+            .files
             .iter()
             .map(|file| file.name.clone())
             .map(|name| format!("{NOTIFY_STRING}\n{name}"))
@@ -118,36 +127,13 @@ impl PeerClient {
             let request = channel.recv().await.unwrap()?;
 
             match request.request {
-                OldRequest::FetchNumbers => {
-                    let numbers = self.find_file(&request.name).and_then(|file| {
-                        Some(file.segments.iter().map(|segment| segment.index).collect())
-                    });
-
-                    let request =
-                        NamedRequest::new(request.name, OldRequest::ReceiveNumbers { numbers });
-
-                    channel.send(request).await?;
-                }
-                OldRequest::FetchSegment { seg_number } => {
-                    let segment = self.find_file(&request.name).and_then(|file| {
-                        file.segments
-                            .iter()
-                            .find(|segment| segment.index == seg_number)
-                    });
-
-                    let request = NamedRequest::new(
-                        request.name,
-                        OldRequest::ReceiveSegment {
-                            segment: segment.unwrap().clone(),
-                        },
-                    );
-
-                    channel.send(request).await?;
-                }
                 OldRequest::ReceiveNumbers { numbers } => match numbers {
                     None => {}
                     Some(numbers) => {
-                        println!("Client: Received numbers from peer on {}", channel.peer_addr());
+                        println!(
+                            "Client: Received numbers from peer on {}",
+                            channel.peer_addr()
+                        );
                         for seg_number in numbers {
                             let request = NamedRequest::new(
                                 request.name.clone(),
@@ -158,14 +144,23 @@ impl PeerClient {
                     }
                 },
                 OldRequest::ReceiveSegment { segment } => {
-                    println!("Client: Received segment number {} from peer on {}", segment.index, channel.peer_addr());
+                    println!(
+                        "Client: Received segment number {} from peer on {}",
+                        segment.index,
+                        channel.peer_addr()
+                    );
                     let index = segment.index;
                     self.files
                         .iter_mut()
                         .find(|file| file.name == request.name)
                         .and_then(|file| Some(file.add_segment(segment)));
 
-                    println!("Client: Added segment number {} from {} to the file {}.", index, channel.peer_addr(), request.name);
+                    println!(
+                        "Client: Added segment number {} from {} to the file {}.",
+                        index,
+                        channel.peer_addr(),
+                        request.name
+                    );
                     let file = self.find_file(&request.name).unwrap();
                     if file.is_complete() {
                         channel
@@ -175,27 +170,24 @@ impl PeerClient {
                 }
                 OldRequest::Finished => {
                     println!("Client: {}: download complete.", request.name);
+                    let file = std::fs::write(&request.name, self.files
+                        .iter_mut()
+                        .find(|file| file.name == request.name)
+                        .unwrap()
+                        .collect_file())
+                        .unwrap();
                     channel
                         .send(NamedRequest::new(request.name, OldRequest::Finished))
                         .await?;
                     break;
                 }
-                OldRequest::FetchFileInfo => match self.find_file(&request.name) {
-                    None => {}
-                    Some(file) => {
-                        let request = NamedRequest::new(
-                            request.name,
-                            OldRequest::ReceiveFileInfo { size: file.size },
-                        );
-                        channel.send(request).await?;
-                    }
-                },
                 OldRequest::ReceiveFileInfo { size } => {
                     println!("Client: Received {}'s size: {size}", request.name);
                     self.create_empty_file(&request.name, size);
                     let request = NamedRequest::new(request.name, OldRequest::FetchNumbers);
                     channel.send(request).await?;
                 }
+                _ => unreachable!()
             }
         }
         Ok(())

@@ -2,11 +2,12 @@ mod client;
 mod listener;
 mod tracker;
 
-use crate::client::PeerClient;
-use crate::listener::PeerListener;
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+pub use client::PeerClient;
+pub use listener::PeerListener;
 
 const SEGMENT_SIZE: usize = 256 * 1024;
 
@@ -17,10 +18,10 @@ struct Segment {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct TorrentFile {
+pub struct TorrentFile {
     segments: Vec<Segment>,
-    name: String,
-    size: usize,
+    pub name: String,
+    pub size: usize,
 }
 
 struct TorrentClient {
@@ -108,7 +109,7 @@ impl TorrentFile {
         }
     }
 
-    fn collect_file(&mut self) -> Vec<u8> {
+    pub fn collect_file(&mut self) -> Vec<u8> {
         let mut segments = self.segments.clone();
         segments.sort_by(|a, b| a.index.cmp(&b.index));
         segments
@@ -119,7 +120,7 @@ impl TorrentFile {
     }
 
     fn is_complete(&self) -> bool {
-        if self.size / SEGMENT_SIZE != self.segments.len() {
+        if self.size != self.segments.iter().map(|seg| seg.data.len()).sum::<usize>() {
             return false;
         }
 
@@ -155,15 +156,18 @@ mod tests {
             SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
         );
 
+        let mut peer0 = PeerClient::new(
+            Path::new("src").into(),
+            SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
+        )
+        .await;
         let mut peer1 = PeerClient::new(
             Path::new(".").into(),
             SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
-        ).await;
+        )
+        .await;
         peer1
-            .download_file_peer(
-                "file.pdf".to_string(),
-                SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
-            )
+            .download_file_peer("file.pdf".to_string(), SocketAddr::new("127.0.0.1".parse().unwrap(), 8001))
             .await
             .unwrap();
 
