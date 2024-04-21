@@ -27,14 +27,36 @@ struct TorrentClient {
     listener: PeerListener,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 struct NamedRequest {
     name: String,
-    request: Request,
+    request: OldRequest,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 enum Request {
+    ListenerRequest(ListenerRequest),
+    ClientRequest(ClientRequest),
+}
+
+#[derive(Serialize, Deserialize)]
+enum ListenerRequest {
+    FetchFileInfo,
+    FetchNumbers,
+    FetchSegment { seg_number: usize },
+    Finished,
+}
+
+#[derive(Serialize, Deserialize)]
+enum ClientRequest {
+    ReceiveFileInfo { size: usize },
+    ReceiveNumbers { numbers: Option<Vec<usize>> },
+    ReceiveSegment { segment: Segment },
+    Finished,
+}
+
+#[derive(Serialize, Deserialize)]
+enum OldRequest {
     FetchFileInfo,
     FetchNumbers,
     FetchSegment { seg_number: usize },
@@ -45,7 +67,7 @@ enum Request {
 }
 
 impl NamedRequest {
-    fn new(name: String, request: Request) -> Self {
+    fn new(name: String, request: OldRequest) -> Self {
         Self { name, request }
     }
 }
@@ -124,14 +146,9 @@ mod tests {
     use crate::listener::PeerListener;
     use std::net::SocketAddr;
     use std::path::Path;
-    use std::time::Duration;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     async fn download_from_one_peer_test() {
-        PeerListener::new_listen(
-            Path::new(".").into(),
-            SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
-        );
         PeerListener::new_listen(
             Path::new("src").into(),
             SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
