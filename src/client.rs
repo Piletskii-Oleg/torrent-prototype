@@ -38,10 +38,7 @@ impl PeerClient {
             .collect();
 
         let files = Arc::new(Mutex::new(files));
-        let peer = PeerClient {
-            files,
-            tracker,
-        };
+        let peer = PeerClient { files, tracker };
 
         PeerListener::new_listen(peer.files.clone(), listen_address);
 

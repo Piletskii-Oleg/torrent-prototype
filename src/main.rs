@@ -7,13 +7,13 @@ async fn main() {
     let mut peer0 = PeerClient::new(
         Path::new("src").into(),
         SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
-        SocketAddr::new("127.0.0.1".parse().unwrap(), 8001)
+        SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
     )
     .await;
     let mut peer1 = PeerClient::new(
         Path::new(".").into(),
         SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
-        SocketAddr::new("127.0.0.1".parse().unwrap(), 9000)
+        SocketAddr::new("127.0.0.1".parse().unwrap(), 9000),
     )
     .await;
 

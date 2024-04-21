@@ -107,10 +107,8 @@ impl PeerListener {
                     };
                     if let Some(size) = maybe_size {
                         println!("Listener: Request from {}. File {} with size {} found. Sending file info...", channel.peer_addr(), request.name, size);
-                        let request = NamedRequest::new(
-                            request.name,
-                            OldRequest::ReceiveFileInfo { size },
-                        );
+                        let request =
+                            NamedRequest::new(request.name, OldRequest::ReceiveFileInfo { size });
                         channel.send(request).await.unwrap();
                     }
                 }
