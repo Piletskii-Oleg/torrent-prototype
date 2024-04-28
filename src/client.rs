@@ -1,4 +1,4 @@
-use crate::{ClientRequest, ListenerRequest, NamedRequest, PeerListener, Request, TorrentFile};
+use crate::{Receive, Fetch, NamedRequest, PeerListener, Request, TorrentFile};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -10,6 +10,7 @@ use tsyncp::channel::{channel_to, BincodeChannel};
 
 const NOTIFY_STRING: &str = "SET_FILE";
 
+#[allow(dead_code)]
 const FETCH_FILE_STRING: &str = "EXIST_FILE";
 
 const FETCH_FILE_PEERS_STRING: &str = "GET_PEERS";
@@ -56,7 +57,7 @@ impl PeerClient {
 
         let fetch_file = NamedRequest {
             name: name.to_string(),
-            request: ListenerRequest::FetchFileInfo.into(),
+            request: Fetch::FileInfo.into(),
         };
 
         channel.send(fetch_file).await?;
@@ -73,13 +74,6 @@ impl PeerClient {
             self.download_file_peer(name, socket).await.unwrap();
         }
         Ok(())
-    }
-
-    fn create_file(&mut self, name: &str) {
-        self.files
-            .lock()
-            .unwrap()
-            .push(TorrentFile::new(vec![], name));
     }
 
     async fn fetch_peers(&self, file_name: &str) -> Result<Vec<SocketAddr>, Box<dyn Error>> {
@@ -103,6 +97,7 @@ impl PeerClient {
             .collect())
     }
 
+    #[allow(dead_code)]
     async fn notify_tracker(&self) -> io::Result<()> {
         let requests = self
             .files
@@ -130,8 +125,8 @@ impl PeerClient {
             let request = channel.recv().await.unwrap()?;
 
             match request.request {
-                Request::ClientRequest(client_request) => self.process_client(client_request, &mut channel, request.name).await?,
-                Request::ListenerRequest(_) => unreachable!(),
+                Request::Client(client_request) => self.process_client(client_request, &mut channel, request.name).await?,
+                Request::Listener(_) => unreachable!(),
                 Request::Finished => {
                     println!("Client: {}: download complete.", request.name);
                     let data = self
@@ -153,9 +148,9 @@ impl PeerClient {
         Ok(())
     }
 
-    async fn process_client(&mut self, request: ClientRequest, channel: &mut BincodeChannel<NamedRequest>, name: String) -> Result<(), Box<dyn Error>> {
+    async fn process_client(&mut self, request: Receive, channel: &mut BincodeChannel<NamedRequest>, name: String) -> Result<(), Box<dyn Error>> {
         match request {
-            ClientRequest::ReceiveNumbers { numbers } => match numbers {
+            Receive::Numbers { numbers } => match numbers {
                 None => Ok(()),
                 Some(numbers) => {
                     println!(
@@ -165,26 +160,28 @@ impl PeerClient {
                     for seg_number in numbers {
                         let request = NamedRequest::new(
                             name.clone(),
-                            ListenerRequest::FetchSegment { seg_number }.into(),
+                            Fetch::Segment { seg_number }.into(),
                         );
                         channel.send(request).await?;
                     }
                     Ok(())
                 }
             },
-            ClientRequest::ReceiveSegment { segment } => {
+            Receive::Segment { segment } => {
                 println!(
                     "Client: Received segment number {} from peer on {}",
                     segment.index,
                     channel.peer_addr()
                 );
                 let index = segment.index;
-                self.files
+                if let Some(file) = self.files
                     .lock()
                     .unwrap()
                     .iter_mut()
                     .find(|file| file.name == name)
-                    .and_then(|file| Some(file.add_segment(segment)));
+                {
+                    file.add_segment(segment)
+                }
 
                 println!(
                     "Client: Added segment number {} from {} to the file {}.",
@@ -192,19 +189,23 @@ impl PeerClient {
                     channel.peer_addr(),
                     name
                 );
-                let guard = self.files.lock().unwrap();
-                let file = guard.iter().find(|file| file.name == name).unwrap();
-                if file.is_complete() {
+
+                let is_complete = {
+                    let guard = self.files.lock().unwrap();
+                    let file = guard.iter().find(|file| file.name == name).unwrap();
+                    file.is_complete()
+                };
+                if is_complete {
                     channel
                         .send(NamedRequest::new(name, Request::Finished))
                         .await?;
                 }
                 Ok(())
             }
-            ClientRequest::ReceiveFileInfo { size } => {
+            Receive::FileInfo { size } => {
                 println!("Client: Received {}'s size: {size}", name);
                 self.create_empty_file(&name, size);
-                let request = NamedRequest::new(name, ListenerRequest::FetchNumbers.into());
+                let request = NamedRequest::new(name, Fetch::Numbers.into());
                 channel.send(request).await?;
                 Ok(())
             }

@@ -4,7 +4,6 @@ mod tracker;
 
 use serde::{Deserialize, Serialize};
 use std::cmp::min;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub use client::PeerClient;
 pub use listener::PeerListener;
@@ -32,23 +31,23 @@ struct NamedRequest {
 
 #[derive(Serialize, Deserialize)]
 enum Request {
-    ListenerRequest(ListenerRequest),
-    ClientRequest(ClientRequest),
+    Listener(Fetch),
+    Client(Receive),
     Finished,
 }
 
 #[derive(Serialize, Deserialize)]
-enum ListenerRequest {
-    FetchFileInfo,
-    FetchNumbers,
-    FetchSegment { seg_number: usize },
+enum Fetch {
+    FileInfo,
+    Numbers,
+    Segment { seg_number: usize },
 }
 
 #[derive(Serialize, Deserialize)]
-enum ClientRequest {
-    ReceiveFileInfo { size: usize },
-    ReceiveNumbers { numbers: Option<Vec<usize>> },
-    ReceiveSegment { segment: Segment },
+enum Receive {
+    FileInfo { size: usize },
+    Numbers { numbers: Option<Vec<usize>> },
+    Segment { segment: Segment },
 }
 
 impl NamedRequest {
@@ -57,15 +56,15 @@ impl NamedRequest {
     }
 }
 
-impl From<ListenerRequest> for Request {
-    fn from(value: ListenerRequest) -> Self {
-        Self::ListenerRequest(value)
+impl From<Fetch> for Request {
+    fn from(value: Fetch) -> Self {
+        Self::Listener(value)
     }
 }
 
-impl From<ClientRequest> for Request {
-    fn from(value: ClientRequest) -> Self {
-        Self::ClientRequest(value)
+impl From<Receive> for Request {
+    fn from(value: Receive) -> Self {
+        Self::Client(value)
     }
 }
 
@@ -94,11 +93,10 @@ impl TorrentFile {
     }
 
     fn add_segment(&mut self, to_add: Segment) {
-        if self
+        if !self
             .segments
             .iter()
-            .find(|segment| segment.index == to_add.index)
-            .is_none()
+            .any(|segment| segment.index == to_add.index)
         {
             self.segments.push(to_add);
         }
@@ -132,18 +130,17 @@ impl TorrentFile {
             .collect::<Vec<_>>();
         numbers.sort();
 
-        let mut current = 0;
-        for number in numbers {
+        for (current, number) in numbers.into_iter().enumerate() {
             if number != current {
                 return false;
             }
-            current += 1;
         }
 
         true
     }
 }
 
+#[cfg(test)]
 mod tests {
     use crate::client::PeerClient;
     use std::net::SocketAddr;
