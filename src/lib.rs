@@ -10,7 +10,7 @@ pub use listener::PeerListener;
 
 const SEGMENT_SIZE: usize = 256 * 1024;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Segment {
     index: usize,
     data: Vec<u8>,
@@ -19,8 +19,9 @@ struct Segment {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct TorrentFile {
     segments: Vec<Segment>,
-    pub name: String,
-    pub size: usize,
+    name: String,
+    intended_size: usize,
+    actual_size: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -40,14 +41,14 @@ enum Request {
 enum Fetch {
     FileInfo,
     Numbers,
-    Segment { seg_number: usize },
+    SegmentNumber(usize),
 }
 
 #[derive(Serialize, Deserialize)]
 enum Receive {
-    FileInfo { size: usize },
-    Numbers { numbers: Option<Vec<usize>> },
-    Segment { segment: Segment },
+    FileSize(usize),
+    Numbers(Option<Vec<usize>>),
+    Segment(Segment),
 }
 
 impl NamedRequest {
@@ -88,7 +89,17 @@ impl TorrentFile {
         TorrentFile {
             segments,
             name: name.to_string(),
-            size: data.len(),
+            intended_size: data.len(),
+            actual_size: data.len(),
+        }
+    }
+
+    fn new_empty(name: &str, size: usize) -> Self {
+        Self {
+            segments: vec![],
+            name: name.to_string(),
+            intended_size: size,
+            actual_size: 0,
         }
     }
 
@@ -98,11 +109,12 @@ impl TorrentFile {
             .iter()
             .any(|segment| segment.index == to_add.index)
         {
+            self.actual_size += to_add.data.len();
             self.segments.push(to_add);
         }
     }
 
-    pub fn collect_file(&mut self) -> Vec<u8> {
+    pub fn collect_file(&self) -> Vec<u8> {
         let mut segments = self.segments.clone();
         segments.sort_by(|a, b| a.index.cmp(&b.index));
         segments
@@ -113,13 +125,7 @@ impl TorrentFile {
     }
 
     fn is_complete(&self) -> bool {
-        if self.size
-            != self
-                .segments
-                .iter()
-                .map(|seg| seg.data.len())
-                .sum::<usize>()
-        {
+        if self.intended_size != self.actual_size {
             return false;
         }
 
@@ -137,45 +143,5 @@ impl TorrentFile {
         }
 
         true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::client::PeerClient;
-    use std::net::SocketAddr;
-    use std::path::Path;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
-    async fn download_from_one_peer_test() {
-        let mut peer0 = PeerClient::new(
-            Path::new("src").into(),
-            SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
-            SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
-        )
-        .await;
-        let mut peer1 = PeerClient::new(
-            Path::new(".").into(),
-            SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
-            SocketAddr::new("127.0.0.1".parse().unwrap(), 9000),
-        )
-        .await;
-        peer1
-            .download_file_peer(
-                "file.pdf".to_string(),
-                SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
-            )
-            .await
-            .unwrap();
-
-        let main = std::fs::read("src/file.pdf").unwrap();
-        let mut vec_guard = peer1.files.lock().unwrap();
-        let file = vec_guard
-            .iter_mut()
-            .find(|file| file.name == "file.pdf")
-            .unwrap()
-            .collect_file();
-        assert_eq!(main.len(), file.len());
-        assert_eq!(main, file)
     }
 }

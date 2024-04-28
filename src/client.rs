@@ -16,7 +16,7 @@ const FETCH_FILE_PEERS_STRING: &str = "GET_PEERS";
 
 pub struct PeerClient {
     folder: PathBuf,
-    pub files: Arc<Mutex<Vec<TorrentFile>>>,
+    files: Arc<Mutex<Vec<TorrentFile>>>,
     // tracker: SocketAddr,
 }
 
@@ -72,7 +72,10 @@ impl PeerClient {
         Ok(())
     }
 
-    pub async fn download_file(&mut self, name: String) -> Result<Vec<JoinHandle<()>>, Box<dyn Error>> {
+    pub async fn download_file(
+        &mut self,
+        name: String,
+    ) -> Result<Vec<JoinHandle<()>>, Box<dyn Error>> {
         let peer_sockets = self.fetch_peers(&name).await?;
         let mut handles = Vec::with_capacity(peer_sockets.len());
         for socket in peer_sockets {
@@ -174,7 +177,7 @@ impl PeerClient {
         name: String,
     ) -> Result<(), Box<dyn Error>> {
         match request {
-            Receive::Numbers { numbers } => match numbers {
+            Receive::Numbers(numbers) => match numbers {
                 None => Ok(()),
                 Some(numbers) => {
                     println!(
@@ -182,14 +185,16 @@ impl PeerClient {
                         channel.peer_addr()
                     );
                     for seg_number in numbers {
-                        let request =
-                            NamedRequest::new(name.clone(), Fetch::Segment { seg_number }.into());
+                        let request = NamedRequest::new(
+                            name.clone(),
+                            Fetch::SegmentNumber(seg_number).into(),
+                        );
                         channel.send(request).await?;
                     }
                     Ok(())
                 }
             },
-            Receive::Segment { segment } => {
+            Receive::Segment(segment) => {
                 println!(
                     "Client: Received segment number {} from peer on {}",
                     segment.index,
@@ -224,8 +229,8 @@ impl PeerClient {
                 }
                 Ok(())
             }
-            Receive::FileInfo { size } => {
-                println!("Client: Received {}'s size: {size}", name);
+            Receive::FileSize(size) => {
+                println!("Client: Received {name}'s size: {size}");
                 Self::create_empty_file(files, &name, size);
                 let request = NamedRequest::new(name, Fetch::Numbers.into());
                 channel.send(request).await?;
@@ -235,10 +240,19 @@ impl PeerClient {
     }
 
     fn create_empty_file(files: Arc<Mutex<Vec<TorrentFile>>>, name: &str, size: usize) {
-        files.lock().unwrap().push(TorrentFile {
-            segments: vec![],
-            name: name.to_string(),
-            size,
-        })
+        let empty_file = TorrentFile::new_empty(name, size);
+        files.lock().unwrap().push(empty_file)
+    }
+
+    pub fn file_data(&self, name: &str) -> Option<Vec<u8>> {
+        Some(
+            self.files
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|file| file.name == name)
+                .unwrap()
+                .collect_file(),
+        )
     }
 }

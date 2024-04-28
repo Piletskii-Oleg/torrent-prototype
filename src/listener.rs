@@ -70,11 +70,11 @@ impl PeerListener {
                     .find(|file| file.name == name)
                     .map(|file| file.segments.iter().map(|segment| segment.index).collect());
 
-                let request = NamedRequest::new(name, Receive::Numbers { numbers }.into());
+                let request = NamedRequest::new(name, Receive::Numbers(numbers).into());
 
                 channel.send(request).await.unwrap();
             }
-            Fetch::Segment { seg_number } => {
+            Fetch::SegmentNumber(seg_number) => {
                 println!("Listener: Received request for segment number {seg_number} from {}. Sending...", channel.peer_addr());
                 let segment = {
                     let guard = self.files.lock().unwrap();
@@ -90,13 +90,7 @@ impl PeerListener {
                         .cloned()
                 };
 
-                let request = NamedRequest::new(
-                    name,
-                    Receive::Segment {
-                        segment: segment.unwrap(),
-                    }
-                    .into(),
-                );
+                let request = NamedRequest::new(name, Receive::Segment(segment.unwrap()).into());
 
                 channel.send(request).await.unwrap();
             }
@@ -107,11 +101,11 @@ impl PeerListener {
                         .unwrap()
                         .iter()
                         .find(|file| file.name == name)
-                        .map(|file| file.size)
+                        .map(|file| file.intended_size)
                 };
                 if let Some(size) = maybe_size {
                     println!("Listener: Request from {}. File {} with size {} found. Sending file info...", channel.peer_addr(), name, size);
-                    let request = NamedRequest::new(name, Receive::FileInfo { size }.into());
+                    let request = NamedRequest::new(name, Receive::FileSize(size).into());
                     channel.send(request).await.unwrap();
                 }
             }
