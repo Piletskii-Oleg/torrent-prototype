@@ -8,7 +8,9 @@ use std::cmp::min;
 pub use client::PeerClient;
 pub use listener::PeerListener;
 
-const SEGMENT_SIZE: usize = 256 * 1024;
+const KB: usize = 1024;
+
+const SEGMENT_SIZE: usize = 256 * KB;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Segment {
