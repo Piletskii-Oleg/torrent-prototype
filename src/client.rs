@@ -1,4 +1,4 @@
-use crate::{Fetch, NamedRequest, PeerListener, Receive, Request, TorrentFile};
+use crate::{Fetch, NamedRequest, PeerListener, Receive, Request};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io;
 use tokio::task::JoinHandle;
 use tsyncp::channel::{channel_to, BincodeChannel};
+use crate::storage::Storage;
 
 const NOTIFY_STRING: &str = "SET_FILE";
 
@@ -15,47 +16,23 @@ const FETCH_FILE_STRING: &str = "EXIST_FILE";
 const FETCH_FILE_PEERS_STRING: &str = "GET_PEERS";
 
 pub struct PeerClient {
-    folder: PathBuf,
-    files: Arc<Mutex<Vec<TorrentFile>>>,
+    storage: Arc<Mutex<dyn Storage + Send + Sync>>
     // tracker: SocketAddr,
 }
 
 impl PeerClient {
-    pub async fn new(folder: PathBuf, listen_address: SocketAddr) -> Self {
-        let file_paths = std::fs::read_dir(&folder)
-            .unwrap()
-            .map(|dir| dir.unwrap().path())
-            .filter(|dir| dir.is_file())
-            .collect::<Vec<_>>();
-
-        let files = file_paths
-            .into_iter()
-            .map(|path| {
-                let data = std::fs::read(&path).unwrap();
-                let name = path.file_name().unwrap().to_str().unwrap();
-                TorrentFile::new(data, name)
-            })
-            .collect();
-
-        let files = Arc::new(Mutex::new(files));
-        let peer = PeerClient {
-            folder,
-            files,
-            // tracker,
-        };
-
-        PeerListener::listen(peer.files.clone(), listen_address);
+    pub async fn new(storage: Arc<Mutex<dyn Storage + Send + Sync>>, listen_address: SocketAddr) -> Self {
+        PeerListener::listen(storage.clone(), listen_address);
 
         //peer.notify_tracker().await.unwrap();
 
-        peer
+        PeerClient { storage }
     }
 
     pub async fn download_file_peer(
         name: String,
         socket: SocketAddr,
-        files: Arc<Mutex<Vec<TorrentFile>>>,
-        folder: PathBuf,
+        storage: Arc<Mutex<dyn Storage + Send + Sync>>,
     ) -> Result<(), Box<dyn Error>> {
         println!("Connecting to channel with {socket}");
         let mut channel: BincodeChannel<NamedRequest> = channel_to(socket).await?;
@@ -67,7 +44,7 @@ impl PeerClient {
 
         channel.send(fetch_file).await?;
 
-        Self::process_channel(files, folder, channel).await?;
+        Self::process_channel(storage, channel).await?;
 
         Ok(())
     }
@@ -79,12 +56,10 @@ impl PeerClient {
         let peer_sockets = self.fetch_peers(&name).await?;
         let mut handles = Vec::with_capacity(peer_sockets.len());
         for socket in peer_sockets {
-            let folder = self.folder.clone();
-            let files = self.files.clone();
             let name = name.clone();
+            let storage = self.storage.clone();
             handles.push(tokio::spawn(async move {
-                let name = name.clone();
-                Self::download_file_peer(name, socket, files, folder)
+                Self::download_file_peer(name, socket, storage)
                     .await
                     .unwrap();
             }));
@@ -134,8 +109,7 @@ impl PeerClient {
     }
 
     async fn process_channel(
-        files: Arc<Mutex<Vec<TorrentFile>>>,
-        folder: PathBuf,
+        files: Arc<Mutex<dyn Storage + Send + Sync>>,
         mut channel: BincodeChannel<NamedRequest>,
     ) -> Result<(), Box<dyn Error>> {
         loop {
@@ -150,14 +124,14 @@ impl PeerClient {
                 Request::Finished => {
                     println!("Client: {}: download complete.", request.name);
 
-                    let data = files
-                        .lock()
-                        .unwrap()
-                        .iter_mut()
-                        .find(|file| file.name == request.name)
-                        .unwrap()
-                        .collect_file();
-                    let path = folder.join(&request.name);
+                    let (data, path) = {
+                        let guard = files
+                            .lock()
+                            .unwrap();
+                        let data = guard.file_data();
+                        let path = guard.path(&request.name);
+                        (data, path)
+                    };
                     std::fs::write(path, data)?;
 
                     channel
@@ -171,7 +145,7 @@ impl PeerClient {
     }
 
     async fn process_client(
-        files: Arc<Mutex<Vec<TorrentFile>>>,
+        files: Arc<Mutex<dyn Storage + Send + Sync>>,
         request: Receive,
         channel: &mut BincodeChannel<NamedRequest>,
         name: String,
@@ -201,14 +175,10 @@ impl PeerClient {
                     channel.peer_addr()
                 );
                 let index = segment.index;
-                if let Some(file) = files
+                files
                     .lock()
                     .unwrap()
-                    .iter_mut()
-                    .find(|file| file.name == name)
-                {
-                    file.add_segment(segment)
-                }
+                    .add_segment(segment)?;
 
                 println!(
                     "Client: Added segment number {} from {} to the file {}.",
@@ -219,8 +189,7 @@ impl PeerClient {
 
                 let is_complete = {
                     let guard = files.lock().unwrap();
-                    let file = guard.iter().find(|file| file.name == name).unwrap();
-                    file.is_complete()
+                    guard.is_complete(&name)
                 };
                 if is_complete {
                     channel
@@ -231,28 +200,11 @@ impl PeerClient {
             }
             Receive::FileSize(size) => {
                 println!("Client: Received {name}'s size: {size}");
-                Self::create_empty_file(files, &name, size);
+                files.lock().unwrap().create_empty_file()?;
                 let request = NamedRequest::new(name, Fetch::Numbers.into());
                 channel.send(request).await?;
                 Ok(())
             }
         }
-    }
-
-    fn create_empty_file(files: Arc<Mutex<Vec<TorrentFile>>>, name: &str, size: usize) {
-        let empty_file = TorrentFile::new_empty(name, size);
-        files.lock().unwrap().push(empty_file)
-    }
-
-    pub fn file_data(&self, name: &str) -> Option<Vec<u8>> {
-        Some(
-            self.files
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|file| file.name == name)
-                .unwrap()
-                .collect_file(),
-        )
     }
 }
