@@ -1,12 +1,11 @@
-use crate::{NamedRequest, OldRequest, PeerListener, TorrentFile};
+use crate::{ClientRequest, ListenerRequest, NamedRequest, PeerListener, Request, TorrentFile};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpSocket, TcpStream};
+use tokio::net::TcpStream;
 use tsyncp::channel::{channel_to, BincodeChannel};
 
 const NOTIFY_STRING: &str = "SET_FILE";
@@ -57,7 +56,7 @@ impl PeerClient {
 
         let fetch_file = NamedRequest {
             name: name.to_string(),
-            request: OldRequest::FetchFileInfo,
+            request: ListenerRequest::FetchFileInfo.into(),
         };
 
         channel.send(fetch_file).await?;
@@ -131,51 +130,9 @@ impl PeerClient {
             let request = channel.recv().await.unwrap()?;
 
             match request.request {
-                OldRequest::ReceiveNumbers { numbers } => match numbers {
-                    None => {}
-                    Some(numbers) => {
-                        println!(
-                            "Client: Received numbers from peer on {}",
-                            channel.peer_addr()
-                        );
-                        for seg_number in numbers {
-                            let request = NamedRequest::new(
-                                request.name.clone(),
-                                OldRequest::FetchSegment { seg_number },
-                            );
-                            channel.send(request).await?;
-                        }
-                    }
-                },
-                OldRequest::ReceiveSegment { segment } => {
-                    println!(
-                        "Client: Received segment number {} from peer on {}",
-                        segment.index,
-                        channel.peer_addr()
-                    );
-                    let index = segment.index;
-                    self.files
-                        .lock()
-                        .unwrap()
-                        .iter_mut()
-                        .find(|file| file.name == request.name)
-                        .and_then(|file| Some(file.add_segment(segment)));
-
-                    println!(
-                        "Client: Added segment number {} from {} to the file {}.",
-                        index,
-                        channel.peer_addr(),
-                        request.name
-                    );
-                    let guard = self.files.lock().unwrap();
-                    let file = guard.iter().find(|file| file.name == request.name).unwrap();
-                    if file.is_complete() {
-                        channel
-                            .send(NamedRequest::new(request.name, OldRequest::Finished))
-                            .await?;
-                    }
-                }
-                OldRequest::Finished => {
+                Request::ClientRequest(client_request) => self.process_client(client_request, &mut channel, request.name).await?,
+                Request::ListenerRequest(_) => unreachable!(),
+                Request::Finished => {
                     println!("Client: {}: download complete.", request.name);
                     let data = self
                         .files
@@ -187,20 +144,71 @@ impl PeerClient {
                         .collect_file();
                     std::fs::write(&request.name, data)?;
                     channel
-                        .send(NamedRequest::new(request.name, OldRequest::Finished))
+                        .send(NamedRequest::new(request.name, Request::Finished))
                         .await?;
                     break;
                 }
-                OldRequest::ReceiveFileInfo { size } => {
-                    println!("Client: Received {}'s size: {size}", request.name);
-                    self.create_empty_file(&request.name, size);
-                    let request = NamedRequest::new(request.name, OldRequest::FetchNumbers);
-                    channel.send(request).await?;
-                }
-                _ => unreachable!(),
-            }
+            };
         }
         Ok(())
+    }
+
+    async fn process_client(&mut self, request: ClientRequest, channel: &mut BincodeChannel<NamedRequest>, name: String) -> Result<(), Box<dyn Error>> {
+        match request {
+            ClientRequest::ReceiveNumbers { numbers } => match numbers {
+                None => Ok(()),
+                Some(numbers) => {
+                    println!(
+                        "Client: Received numbers from peer on {}",
+                        channel.peer_addr()
+                    );
+                    for seg_number in numbers {
+                        let request = NamedRequest::new(
+                            name.clone(),
+                            ListenerRequest::FetchSegment { seg_number }.into(),
+                        );
+                        channel.send(request).await?;
+                    }
+                    Ok(())
+                }
+            },
+            ClientRequest::ReceiveSegment { segment } => {
+                println!(
+                    "Client: Received segment number {} from peer on {}",
+                    segment.index,
+                    channel.peer_addr()
+                );
+                let index = segment.index;
+                self.files
+                    .lock()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|file| file.name == name)
+                    .and_then(|file| Some(file.add_segment(segment)));
+
+                println!(
+                    "Client: Added segment number {} from {} to the file {}.",
+                    index,
+                    channel.peer_addr(),
+                    name
+                );
+                let guard = self.files.lock().unwrap();
+                let file = guard.iter().find(|file| file.name == name).unwrap();
+                if file.is_complete() {
+                    channel
+                        .send(NamedRequest::new(name, Request::Finished))
+                        .await?;
+                }
+                Ok(())
+            }
+            ClientRequest::ReceiveFileInfo { size } => {
+                println!("Client: Received {}'s size: {size}", name);
+                self.create_empty_file(&name, size);
+                let request = NamedRequest::new(name, ListenerRequest::FetchNumbers.into());
+                channel.send(request).await?;
+                Ok(())
+            }
+        }
     }
 
     fn create_empty_file(&mut self, name: &str, size: usize) {

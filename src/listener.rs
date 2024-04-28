@@ -1,10 +1,9 @@
-use crate::{NamedRequest, OldRequest, TorrentFile};
+use crate::ListenerRequest;
+use crate::{ClientRequest, NamedRequest, Request, TorrentFile};
 use std::fmt::Debug;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io;
-use tokio::io::AsyncReadExt;
 use tsyncp::channel::{channel_on, BincodeChannel};
 
 pub struct PeerListener {
@@ -41,80 +40,88 @@ impl PeerListener {
     ) -> io::Result<()> {
         loop {
             let request = channel.recv().await.unwrap().unwrap();
-
             match request.request {
-                OldRequest::FetchNumbers => {
-                    println!(
-                        "Listener: Received request for segment numbers from {}. Sending...",
-                        channel.peer_addr()
-                    );
-                    let numbers = self
-                        .files
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .find(|file| file.name == request.name)
-                        .and_then(|file| {
-                            Some(file.segments.iter().map(|segment| segment.index).collect())
-                        });
-
-                    let request =
-                        NamedRequest::new(request.name, OldRequest::ReceiveNumbers { numbers });
-
-                    channel.send(request).await.unwrap();
-                }
-                OldRequest::FetchSegment { seg_number } => {
-                    println!("Listener: Received request for segment number {seg_number} from {}. Sending...", channel.peer_addr());
-                    let segment = {
-                        let guard = self.files.lock().unwrap();
-
-                        guard
-                            .iter()
-                            .find(|file| file.name == request.name)
-                            .and_then(|file| {
-                                file.segments
-                                    .iter()
-                                    .find(|segment| segment.index == seg_number)
-                            })
-                            .map(|segment| segment.clone())
-                    };
-
-                    let request = NamedRequest::new(
-                        request.name,
-                        OldRequest::ReceiveSegment {
-                            segment: segment.unwrap(),
-                        },
-                    );
-
-                    channel.send(request).await.unwrap();
-                }
-                OldRequest::Finished => {
+                Request::ClientRequest(_) => unreachable!(),
+                Request::ListenerRequest(listener_request) => self.process_listener(listener_request, &mut channel, request.name).await?,
+                Request::Finished => {
                     println!("{} transfer complete.", request.name);
                     channel
-                        .send(NamedRequest::new(request.name, OldRequest::Finished))
+                        .send(NamedRequest::new(request.name, Request::Finished))
                         .await
                         .unwrap();
                     break;
                 }
-                OldRequest::FetchFileInfo => {
-                    let maybe_size = {
-                        self.files
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .find(|file| file.name == request.name)
-                            .map(|file| file.size)
-                    };
-                    if let Some(size) = maybe_size {
-                        println!("Listener: Request from {}. File {} with size {} found. Sending file info...", channel.peer_addr(), request.name, size);
-                        let request =
-                            NamedRequest::new(request.name, OldRequest::ReceiveFileInfo { size });
-                        channel.send(request).await.unwrap();
-                    }
+            };
+        }
+        Ok(())
+    }
+
+    async fn process_listener(&mut self, request: ListenerRequest, channel: &mut BincodeChannel<NamedRequest>, name: String) -> io::Result<()> {
+        match request {
+            ListenerRequest::FetchNumbers => {
+                println!(
+                    "Listener: Received request for segment numbers from {}. Sending...",
+                    channel.peer_addr()
+                );
+                let numbers = self
+                    .files
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|file| file.name == name)
+                    .and_then(|file| {
+                        Some(file.segments.iter().map(|segment| segment.index).collect())
+                    });
+
+                let request =
+                    NamedRequest::new(name, ClientRequest::ReceiveNumbers { numbers }.into());
+
+                channel.send(request).await.unwrap();
+            }
+            ListenerRequest::FetchSegment { seg_number } => {
+                println!("Listener: Received request for segment number {seg_number} from {}. Sending...", channel.peer_addr());
+                let segment = {
+                    let guard = self.files.lock().unwrap();
+
+                    guard
+                        .iter()
+                        .find(|file| file.name == name)
+                        .and_then(|file| {
+                            file.segments
+                                .iter()
+                                .find(|segment| segment.index == seg_number)
+                        })
+                        .map(|segment| segment.clone())
+                };
+
+                let request = NamedRequest::new(
+                    name,
+                    ClientRequest::ReceiveSegment {
+                        segment: segment.unwrap(),
+                    }.into(),
+                );
+
+                channel.send(request).await.unwrap();
+            }
+            ListenerRequest::FetchFileInfo => {
+                let maybe_size = {
+                    self.files
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .find(|file| file.name == name)
+                        .map(|file| file.size)
+                };
+                if let Some(size) = maybe_size {
+                    println!("Listener: Request from {}. File {} with size {} found. Sending file info...", channel.peer_addr(), name, size);
+                    let request =
+                        NamedRequest::new(name, ClientRequest::ReceiveFileInfo { size }.into());
+                    channel.send(request).await.unwrap();
                 }
-                _ => unreachable!(),
             }
         }
         Ok(())
     }
 }
+
+

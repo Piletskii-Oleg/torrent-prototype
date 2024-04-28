@@ -24,21 +24,17 @@ pub struct TorrentFile {
     pub size: usize,
 }
 
-struct TorrentClient {
-    client: PeerClient,
-    listener: PeerListener,
-}
-
 #[derive(Serialize, Deserialize)]
 struct NamedRequest {
     name: String,
-    request: OldRequest,
+    request: Request,
 }
 
 #[derive(Serialize, Deserialize)]
 enum Request {
     ListenerRequest(ListenerRequest),
     ClientRequest(ClientRequest),
+    Finished,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -46,7 +42,6 @@ enum ListenerRequest {
     FetchFileInfo,
     FetchNumbers,
     FetchSegment { seg_number: usize },
-    Finished,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -54,23 +49,23 @@ enum ClientRequest {
     ReceiveFileInfo { size: usize },
     ReceiveNumbers { numbers: Option<Vec<usize>> },
     ReceiveSegment { segment: Segment },
-    Finished,
-}
-
-#[derive(Serialize, Deserialize)]
-enum OldRequest {
-    FetchFileInfo,
-    FetchNumbers,
-    FetchSegment { seg_number: usize },
-    ReceiveNumbers { numbers: Option<Vec<usize>> },
-    ReceiveSegment { segment: Segment },
-    ReceiveFileInfo { size: usize },
-    Finished,
 }
 
 impl NamedRequest {
-    fn new(name: String, request: OldRequest) -> Self {
+    fn new(name: String, request: Request) -> Self {
         Self { name, request }
+    }
+}
+
+impl From<ListenerRequest> for Request {
+    fn from(value: ListenerRequest) -> Self {
+        Self::ListenerRequest(value)
+    }
+}
+
+impl From<ClientRequest> for Request {
+    fn from(value: ClientRequest) -> Self {
+        Self::ClientRequest(value)
     }
 }
 
@@ -151,7 +146,6 @@ impl TorrentFile {
 
 mod tests {
     use crate::client::PeerClient;
-    use crate::listener::PeerListener;
     use std::net::SocketAddr;
     use std::path::Path;
 
