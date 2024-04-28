@@ -11,22 +11,15 @@ pub struct PeerListener {
 }
 
 impl PeerListener {
-    pub fn new_listen(files: Arc<Mutex<Vec<TorrentFile>>>, listen_address: SocketAddr) {
-        let peer = PeerListener {
-            files,
-            // listen_address,
-        };
-
-        tokio::spawn(async move { peer.listen(listen_address).await });
-    }
-
-    async fn listen(mut self, addr: SocketAddr) -> io::Result<()> {
-        let channel: BincodeChannel<NamedRequest> = channel_on(addr).await.unwrap();
-        self.process_stream(channel).await
+    pub fn listen(files: Arc<Mutex<Vec<TorrentFile>>>, listen_address: SocketAddr) {
+        tokio::spawn(async move {
+            let channel: BincodeChannel<NamedRequest> = channel_on(listen_address).await.unwrap();
+            Self::process_stream(files, channel).await
+        });
     }
 
     async fn process_stream(
-        &mut self,
+        files: Arc<Mutex<Vec<TorrentFile>>>,
         mut channel: BincodeChannel<NamedRequest>,
     ) -> io::Result<()> {
         loop {
@@ -34,8 +27,13 @@ impl PeerListener {
             match request.request {
                 Request::Client(_) => unreachable!(),
                 Request::Listener(listener_request) => {
-                    self.process_listener(listener_request, &mut channel, request.name)
-                        .await?
+                    Self::process_listener(
+                        files.clone(),
+                        listener_request,
+                        &mut channel,
+                        request.name,
+                    )
+                    .await?
                 }
                 Request::Finished => {
                     println!("{} transfer complete.", request.name);
@@ -51,7 +49,7 @@ impl PeerListener {
     }
 
     async fn process_listener(
-        &mut self,
+        files: Arc<Mutex<Vec<TorrentFile>>>,
         request: Fetch,
         channel: &mut BincodeChannel<NamedRequest>,
         name: String,
@@ -62,8 +60,7 @@ impl PeerListener {
                     "Listener: Received request for segment numbers from {}. Sending...",
                     channel.peer_addr()
                 );
-                let numbers = self
-                    .files
+                let numbers = files
                     .lock()
                     .unwrap()
                     .iter()
@@ -77,7 +74,7 @@ impl PeerListener {
             Fetch::SegmentNumber(seg_number) => {
                 println!("Listener: Received request for segment number {seg_number} from {}. Sending...", channel.peer_addr());
                 let segment = {
-                    let guard = self.files.lock().unwrap();
+                    let guard = files.lock().unwrap();
 
                     guard
                         .iter()
@@ -95,14 +92,13 @@ impl PeerListener {
                 channel.send(request).await.unwrap();
             }
             Fetch::FileInfo => {
-                let maybe_size = {
-                    self.files
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .find(|file| file.name == name)
-                        .map(|file| file.intended_size)
-                };
+                let maybe_size = files
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|file| file.name == name)
+                    .map(|file| file.intended_size); // can't do if let because the future won't be safe
+
                 if let Some(size) = maybe_size {
                     println!("Listener: Request from {}. File {} with size {} found. Sending file info...", channel.peer_addr(), name, size);
                     let request = NamedRequest::new(name, Receive::FileSize(size).into());

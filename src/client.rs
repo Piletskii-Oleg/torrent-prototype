@@ -44,7 +44,7 @@ impl PeerClient {
             // tracker,
         };
 
-        PeerListener::new_listen(peer.files.clone(), listen_address);
+        PeerListener::listen(peer.files.clone(), listen_address);
 
         //peer.notify_tracker().await.unwrap();
 
