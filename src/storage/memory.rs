@@ -1,10 +1,14 @@
-use std::cmp::min;
-use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
+use crate::storage::{Storage, SEGMENT_SIZE};
 use crate::Segment;
-use crate::storage::{SEGMENT_SIZE, Storage};
+use serde::{Deserialize, Serialize};
+use std::cmp::min;
+use std::io;
+use std::path::PathBuf;
 
-pub struct MemoryStorage(Vec<TorrentFile>);
+pub struct MemoryStorage {
+    files: Vec<TorrentFile>,
+    folder: PathBuf,
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct TorrentFile {
@@ -15,43 +19,54 @@ pub struct TorrentFile {
 }
 
 impl Storage for MemoryStorage {
-    fn add_segment(&mut self, segment: Segment) -> std::io::Result<()> {
-        todo!()
+    fn add_segment(&mut self, name: &str, segment: Segment) -> io::Result<()> {
+        // ErrorKind::NotFound?
+        if let Some(file) = self.files.iter_mut().find(|file| file.name == name) {
+            file.add_segment(segment);
+        }
+        Ok(())
     }
 
     fn is_complete(&self, name: &str) -> bool {
-        todo!()
+        if let Some(file) = self.find_file(name) {
+            return file.is_complete();
+        }
+        false // this is wrong...
     }
 
-    fn create_empty_file(&mut self) -> std::io::Result<()> {
-        todo!()
+    fn create_empty_file(&mut self, name: &str, size: usize) -> io::Result<()> {
+        self.files.push(TorrentFile::new_empty(name, size));
+        Ok(())
     }
 
-    fn file_data(&self) -> Vec<u8> {
-        todo!()
+    fn file_data(&self, name: &str) -> Vec<u8> {
+        self.find_file(name).unwrap().collect_file()
     }
 
     fn file_size(&self, name: &str) -> Option<usize> {
-        todo!()
+        self.find_file(name).map(|file| file.intended_size)
     }
 
     fn path(&self, name: &str) -> PathBuf {
-        todo!()
+        self.folder.join(name)
     }
 
     fn segment_numbers(&self, name: &str) -> Option<Vec<usize>> {
-        todo!()
+        self.find_file(name)
+            .map(|file| file.segments.iter().map(|segment| segment.index).collect())
     }
 
     fn segment(&self, name: &str, index: usize) -> Segment {
-        todo!()
+        self.find_file(name)
+            .and_then(|file| file.segments.iter().find(|segment| segment.index == index))
+            .cloned()
+            .unwrap()
     }
 }
 
 impl MemoryStorage {
-    pub fn new(folder: PathBuf) -> Self {
-        let file_paths = std::fs::read_dir(&folder)
-            .unwrap()
+    pub fn new(folder: PathBuf) -> io::Result<Self> {
+        let file_paths = std::fs::read_dir(&folder)?
             .map(|dir| dir.unwrap().path())
             .filter(|dir| dir.is_file())
             .collect::<Vec<_>>();
@@ -65,7 +80,11 @@ impl MemoryStorage {
             })
             .collect();
 
-        Self(files)
+        Ok(Self { files, folder })
+    }
+
+    fn find_file(&self, name: &str) -> Option<&TorrentFile> {
+        self.files.iter().find(|file| file.name == name)
     }
 }
 

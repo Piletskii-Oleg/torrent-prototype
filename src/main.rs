@@ -5,8 +5,12 @@ use torrent_prototype::{MemoryStorage, PeerClient};
 
 #[tokio::main]
 async fn main() {
-    let storage1 = Arc::new(Mutex::new(MemoryStorage::new(Path::new("src").into())));
-    let storage2 =  Arc::new(Mutex::new(MemoryStorage::new(Path::new(".").into())));
+    let storage1 = Arc::new(Mutex::new(
+        MemoryStorage::new(Path::new("src").into()).unwrap(),
+    ));
+    let storage2 = Arc::new(Mutex::new(
+        MemoryStorage::new(Path::new(".").into()).unwrap(),
+    ));
     let _ = PeerClient::new(
         storage1,
         SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),

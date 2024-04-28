@@ -1,10 +1,10 @@
+use crate::storage::Storage;
 use crate::Fetch;
 use crate::{NamedRequest, Receive, Request};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::io;
 use tsyncp::channel::{channel_on, BincodeChannel};
-use crate::storage::Storage;
 
 pub struct PeerListener;
 
@@ -58,10 +58,7 @@ impl PeerListener {
                     "Listener: Received request for segment numbers from {}. Sending...",
                     channel.peer_addr()
                 );
-                let numbers = files
-                    .lock()
-                    .unwrap()
-                    .segment_numbers(&name);
+                let numbers = files.lock().unwrap().segment_numbers(&name);
 
                 let request = NamedRequest::new(name, Receive::Numbers(numbers).into());
 
@@ -79,10 +76,7 @@ impl PeerListener {
                 channel.send(request).await.unwrap();
             }
             Fetch::FileInfo => {
-                let maybe_size = files
-                    .lock()
-                    .unwrap()
-                    .file_size(&name); // can't do if let because the future won't be safe
+                let maybe_size = files.lock().unwrap().file_size(&name); // can't do if let because the future won't be safe
 
                 if let Some(size) = maybe_size {
                     println!("Listener: Request from {}. File {} with size {} found. Sending file info...", channel.peer_addr(), name, size);

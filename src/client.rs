@@ -1,12 +1,11 @@
+use crate::storage::Storage;
 use crate::{Fetch, NamedRequest, PeerListener, Receive, Request};
 use std::error::Error;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io;
 use tokio::task::JoinHandle;
 use tsyncp::channel::{channel_to, BincodeChannel};
-use crate::storage::Storage;
 
 const NOTIFY_STRING: &str = "SET_FILE";
 
@@ -16,12 +15,14 @@ const FETCH_FILE_STRING: &str = "EXIST_FILE";
 const FETCH_FILE_PEERS_STRING: &str = "GET_PEERS";
 
 pub struct PeerClient {
-    storage: Arc<Mutex<dyn Storage + Send + Sync>>
-    // tracker: SocketAddr,
+    storage: Arc<Mutex<dyn Storage + Send + Sync>>, // tracker: SocketAddr,
 }
 
 impl PeerClient {
-    pub async fn new(storage: Arc<Mutex<dyn Storage + Send + Sync>>, listen_address: SocketAddr) -> Self {
+    pub async fn new(
+        storage: Arc<Mutex<dyn Storage + Send + Sync>>,
+        listen_address: SocketAddr,
+    ) -> Self {
         PeerListener::listen(storage.clone(), listen_address);
 
         //peer.notify_tracker().await.unwrap();
@@ -125,10 +126,8 @@ impl PeerClient {
                     println!("Client: {}: download complete.", request.name);
 
                     let (data, path) = {
-                        let guard = files
-                            .lock()
-                            .unwrap();
-                        let data = guard.file_data();
+                        let guard = files.lock().unwrap();
+                        let data = guard.file_data(&request.name);
                         let path = guard.path(&request.name);
                         (data, path)
                     };
@@ -175,10 +174,7 @@ impl PeerClient {
                     channel.peer_addr()
                 );
                 let index = segment.index;
-                files
-                    .lock()
-                    .unwrap()
-                    .add_segment(segment)?;
+                files.lock().unwrap().add_segment(&name, segment)?;
 
                 println!(
                     "Client: Added segment number {} from {} to the file {}.",
@@ -200,7 +196,7 @@ impl PeerClient {
             }
             Receive::FileSize(size) => {
                 println!("Client: Received {name}'s size: {size}");
-                files.lock().unwrap().create_empty_file()?;
+                files.lock().unwrap().create_empty_file(&name, size)?;
                 let request = NamedRequest::new(name, Fetch::Numbers.into());
                 channel.send(request).await?;
                 Ok(())
