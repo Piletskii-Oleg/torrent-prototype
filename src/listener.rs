@@ -1,5 +1,5 @@
 use crate::Fetch;
-use crate::{Receive, NamedRequest, Request, TorrentFile};
+use crate::{NamedRequest, Receive, Request, TorrentFile};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::io;
@@ -33,7 +33,10 @@ impl PeerListener {
             let request = channel.recv().await.unwrap().unwrap();
             match request.request {
                 Request::Client(_) => unreachable!(),
-                Request::Listener(listener_request) => self.process_listener(listener_request, &mut channel, request.name).await?,
+                Request::Listener(listener_request) => {
+                    self.process_listener(listener_request, &mut channel, request.name)
+                        .await?
+                }
                 Request::Finished => {
                     println!("{} transfer complete.", request.name);
                     channel
@@ -47,7 +50,12 @@ impl PeerListener {
         Ok(())
     }
 
-    async fn process_listener(&mut self, request: Fetch, channel: &mut BincodeChannel<NamedRequest>, name: String) -> io::Result<()> {
+    async fn process_listener(
+        &mut self,
+        request: Fetch,
+        channel: &mut BincodeChannel<NamedRequest>,
+        name: String,
+    ) -> io::Result<()> {
         match request {
             Fetch::Numbers => {
                 println!(
@@ -60,12 +68,9 @@ impl PeerListener {
                     .unwrap()
                     .iter()
                     .find(|file| file.name == name)
-                    .map(|file| {
-                        file.segments.iter().map(|segment| segment.index).collect()
-                    });
+                    .map(|file| file.segments.iter().map(|segment| segment.index).collect());
 
-                let request =
-                    NamedRequest::new(name, Receive::Numbers { numbers }.into());
+                let request = NamedRequest::new(name, Receive::Numbers { numbers }.into());
 
                 channel.send(request).await.unwrap();
             }
@@ -81,14 +86,16 @@ impl PeerListener {
                             file.segments
                                 .iter()
                                 .find(|segment| segment.index == seg_number)
-                        }).cloned()
+                        })
+                        .cloned()
                 };
 
                 let request = NamedRequest::new(
                     name,
                     Receive::Segment {
                         segment: segment.unwrap(),
-                    }.into(),
+                    }
+                    .into(),
                 );
 
                 channel.send(request).await.unwrap();
@@ -104,8 +111,7 @@ impl PeerListener {
                 };
                 if let Some(size) = maybe_size {
                     println!("Listener: Request from {}. File {} with size {} found. Sending file info...", channel.peer_addr(), name, size);
-                    let request =
-                        NamedRequest::new(name, Receive::FileInfo { size }.into());
+                    let request = NamedRequest::new(name, Receive::FileInfo { size }.into());
                     channel.send(request).await.unwrap();
                 }
             }
@@ -113,5 +119,3 @@ impl PeerListener {
         Ok(())
     }
 }
-
-

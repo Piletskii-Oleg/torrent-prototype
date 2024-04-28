@@ -6,25 +6,19 @@ use torrent_prototype::PeerClient;
 async fn main() {
     let _ = PeerClient::new(
         Path::new("src").into(),
-        SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
         SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
     )
     .await;
     let mut peer1 = PeerClient::new(
         Path::new(".").into(),
-        SocketAddr::new("127.0.0.1".parse().unwrap(), 8000),
         SocketAddr::new("127.0.0.1".parse().unwrap(), 9000),
     )
     .await;
 
-    peer1
-        .download_file_peer(
-            "file.pdf".to_string(),
-            SocketAddr::new("127.0.0.1".parse().unwrap(), 8001),
-        )
-        .await
-        .unwrap();
-
+    let handles = peer1.download_file("file.pdf".to_string()).await.unwrap();
+    for handle in handles {
+        handle.await.unwrap();
+    }
     //let main = std::fs::read("src/file.pdf").unwrap();
     // assert_eq!(
     //     main.len(),
